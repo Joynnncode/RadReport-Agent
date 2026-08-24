@@ -1,0 +1,20 @@
+# Dependencies for the PUBLIC Streamlit Community Cloud deployment.
+#
+# Deliberately NO torch, torchvision, torchxrayvision or scikit-image. Those are
+# ~820 MB on disk and PSPNet peaks at ~1.8 GB RSS, against a ~1 GB free-tier
+# limit. The deployment runs with RADREPORT_DEMO=1 and serves precomputed
+# imaging results from data/demo_cache.json instead.
+#
+# Retrieval, PubMed and the agent loop are fully live: none of them need torch.
+#
+# Local development uses requirements.txt, which has everything.
+
+streamlit>=1.40
+pillow>=10.0
+numpy>=1.26
+pandas>=2.1
+rank-bm25>=0.2.2
+requests>=2.31
+pydantic>=2.6
+python-dotenv>=1.0
+google-genai>=0.3.0

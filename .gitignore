@@ -1,0 +1,50 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# data: never commit medical images or the report corpus
+data/images/
+data/reports/
+data/*.csv
+data/*.zip
+
+# DELIBERATE EXCEPTION: data/demo_cache.json IS committed.
+# Streamlit Community Cloud only ever sees the repo, so the precomputed demo
+# cannot work unless its cache ships with it. What is in there: model outputs
+# plus 40 downscaled thumbnails from the Indiana University collection, which is
+# public domain and de-identified with no data use agreement. No report text.
+# The full corpus and full-resolution images stay out, as above.
+
+# generated
+artifacts/
+traces/
+
+# Raw eval records embed radiologist report text pulled from the corpus, and the
+# corpus itself is gitignored. Committing them would smuggle the data back in by
+# another route. The committed evidence is the summary, which carries the numbers
+# without the patient text.
+evals/results/
+evals/ground_truth.json
+evals/spot_checks/
+
+# evals/gold_set.jsonl WAS ignored here. That was wrong and CI caught it.
+#
+# The reasoning was consistency: it embeds verbatim report sentences, and the
+# corpus is ignored. But regenerating it needs the images AND the models, so a
+# fresh clone cannot rebuild it -- which meant five tests that validate real
+# gold-set properties (every named-case question forbids fuzzy search, the
+# absence cases use regexes rather than brittle substrings) could not run in CI
+# at all. Symbolic consistency was costing real coverage.
+#
+# What actually ships: ~8 single sentences from a public-domain, de-identified
+# collection with no data use agreement. The full corpus stays out.
+*.jsonl.gz
+.cache/

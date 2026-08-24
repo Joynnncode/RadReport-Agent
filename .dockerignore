@@ -1,0 +1,19 @@
+.venv/
+.git/
+.github/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Never let a key reach the build context: anything copied in is recoverable
+# from the image layers.
+.env
+.env.*
+
+# Large or regenerable
+data/
+artifacts/
+traces/
+.cache/
+evals/results/
+docs/

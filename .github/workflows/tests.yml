@@ -1,0 +1,75 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays, catches upstream weight/API drift
+
+jobs:
+  fast:
+    # The fast suite: no model weights, no network. Runs on every push and
+    # finishes in under a minute, which is the only way a test suite actually
+    # gets used.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest -m "not slow and not network" -q
+
+  docker:
+    # Build the image on every push. It is the one artefact that cannot be
+    # verified by unit tests, and it breaks quietly: a wheel index change or a
+    # weights URL going stale surfaces only at build time.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  models:
+    # The slow suite: downloads real weights. Scheduled + manual only, because
+    # it takes minutes and the weights rarely change.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python scripts/fetch_data.py --reports-only
+      - run: pytest -m "slow" -q
+
+  eval-smoke:
+    # A five-case smoke eval on a schedule, as a canary for the things unit
+    # tests cannot see: a retired model, a changed tool-calling API, a provider
+    # that started refusing our prompts. Needs a real key, so it is skipped
+    # automatically on forks where the secret is not available.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Build corpus
+        run: python scripts/fetch_data.py --reports-only
+      - name: Smoke eval
+        if: env.GROQ_API_KEY != ''
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python -m evals.run --provider groq --limit 5 --no-judge --delay 2

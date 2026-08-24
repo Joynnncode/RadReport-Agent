@@ -1,0 +1,23 @@
+# --- imaging / model layer ---
+torch>=2.2
+torchvision>=0.17
+torchxrayvision>=1.2.1
+scikit-image>=0.22
+pillow>=10.0
+numpy>=1.26
+
+# --- retrieval layer ---
+rank-bm25>=0.2.2
+pandas>=2.1
+
+# --- agent layer ---
+requests>=2.31
+pydantic>=2.6
+python-dotenv>=1.0
+google-genai>=0.3.0
+
+# --- ui ---
+streamlit>=1.40
+
+# --- dev ---
+pytest>=8.0
