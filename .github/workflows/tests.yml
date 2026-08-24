@@ -22,6 +22,19 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pytest -m "not slow and not network" -q
 
+  docs:
+    # Validate Mermaid diagrams. GitHub renders them server-side and replaces a
+    # broken one with a raw parser error, which is the first thing a reviewer
+    # sees. No Python test can catch that.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --no-save --no-fund --no-audit mermaid@11 jsdom
+      - run: node scripts/check_mermaid.mjs README.md docs/*.md DECISIONS.md
+
   docker:
     # Build the image on every push. It is the one artefact that cannot be
     # verified by unit tests, and it breaks quietly: a wheel index change or a

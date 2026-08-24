@@ -36,7 +36,7 @@ flowchart TD
     D --> T4[search_reports<br/>BM25]
     D --> T5[get_report_by_image<br/>exact join]
     D --> T6[search_literature<br/>PubMed]
-    T2 -.mask_handle .npz.-> T3
+    T2 -. mask_handle .-> T3
     D -->|tool results| A
     A --> J[(traces/*.jsonl)]
     A --> S[run_structured<br/>Pydantic validate + repair once]

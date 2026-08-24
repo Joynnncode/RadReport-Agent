@@ -850,3 +850,36 @@ suite was green because my working directory held four gitignored files that the
 tests silently depended on. A test suite validates the tree you have, not the
 tree you ship, and nothing warns you when those diverge. The fix is not
 discipline, it is a script that makes the shipped tree the thing under test.
+
+---
+
+## 2026-08-24 — The README diagram shipped broken
+
+**What happened.** GitHub replaced the architecture diagram with
+`Lexical error on line 11. Unrecognized text.` The first visual on the repo's
+front page was a parser error.
+
+**What I tried.** Reproduced it locally rather than guessing, by running the real
+Mermaid parser under jsdom. Got the identical error, caret and all. The offending
+line:
+
+```
+T2 -.mask_handle .npz.-> T3
+```
+
+Mermaid's dotted-link-with-label syntax is `-. text .->`. My label contained a
+literal `.` in `.npz`, which collides with the `.->` terminator, so the lexer
+gave up mid-label.
+
+**What I chose and why.** Dropped the dots: `T2 -. mask_handle .-> T3`. Then
+added `scripts/check_mermaid.mjs` and a CI job that parses every Mermaid block in
+every Markdown file on each push.
+
+**Why it is worth a CI job.** No Python test can see this. 133 tests passed, the
+fresh-clone check passed, and the front page was still broken. Documentation
+rendering is a separate failure surface from code, and on a portfolio repo it is
+the surface a reviewer hits first — before a single test result, before any code.
+The one artefact everyone sees was the one artefact nothing verified.
+
+Same shape as the CI failure two entries up: I verified the thing I was thinking
+about and not the thing the audience actually encounters.
