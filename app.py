@@ -92,11 +92,39 @@ def base_image_for(case_id: str):
 with st.sidebar:
     st.header("Configuration")
 
+    # Default to a provider whose key actually exists, rather than always
+    # landing on the first in the list. A public visitor arriving to
+    # "GEMINI_API_KEY not set" has no way to know the app is fine and the
+    # dropdown just needs changing.
+    #
+    # Groq is preferred when both are available: measured 1.9s vs 38s on the same
+    # question, and Gemini's free tier exhausts after ~20 agent runs.
+    @st.cache_data(show_spinner=False, ttl=300)
+    def _usable_providers() -> list[str]:
+        usable = []
+        for name in ("groq", "gemini"):
+            try:
+                get_provider(name)
+                usable.append(name)
+            except Exception:
+                pass
+        return usable
+
+    usable = _usable_providers()
+    options = ["groq", "gemini"]
     provider_name = st.selectbox(
-        "Provider", ["gemini", "groq"],
+        "Provider", options,
+        index=options.index(usable[0]) if usable else 0,
         help="The same agent loop and tools run behind both. Only the model changes.",
     )
     st.caption(f"model: `{DEFAULT_GEMINI_MODEL if provider_name == 'gemini' else DEFAULT_GROQ_MODEL}`")
+    if not usable:
+        st.error(
+            "No provider key is configured, so the agent cannot run. Set "
+            "`GROQ_API_KEY` in `.env` locally, or in **Manage app → Settings → "
+            "Secrets** on Streamlit Cloud.",
+            icon="🔑",
+        )
 
     structured = st.checkbox(
         "Structured output", value=False,
@@ -137,11 +165,21 @@ left, right = st.columns([1, 1])
 with left:
     st.subheader("Case")
     if not cases:
-        st.info(
-            "No cases available. Run `python scripts/fetch_data.py` for live "
-            "inference, or `python scripts/precompute_demo.py` then set "
-            "`RADREPORT_DEMO=1` for the cached demo."
-        )
+        if not DEMO_MODE:
+            st.warning(
+                "**No cases available, and demo mode is off.** On a hosted "
+                "deployment this almost always means `RADREPORT_DEMO` is not set "
+                "to `1` in the app secrets: the image files are gitignored, so "
+                "the only cases available to a deployment are the precomputed "
+                "ones in `data/demo_cache.json`.\n\n"
+                "Locally, run `python scripts/fetch_data.py` for live inference.",
+                icon="🗄️",
+            )
+        else:
+            st.info(
+                "Demo mode is on but `data/demo_cache.json` has no cases. "
+                "Run `python scripts/precompute_demo.py` and commit the result."
+            )
         case_id = None
     else:
         case_id = st.selectbox("Pick a case", cases, index=0)
