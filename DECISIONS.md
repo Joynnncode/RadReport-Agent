@@ -883,3 +883,60 @@ The one artefact everyone sees was the one artefact nothing verified.
 
 Same shape as the CI failure two entries up: I verified the thing I was thinking
 about and not the thing the audience actually encounters.
+
+---
+
+## 2026-08-25 — The data policy conflated licence with size, three times
+
+**What happened.** With demo mode finally working, the deployed app crashed on a
+full traceback: `get_report_by_image` -> `load_corpus` -> ToolError, because
+`data/reports.csv` is not in the repo.
+
+**What I tried.** This was the third bug from the same root, and I had patched
+around it twice already rather than fixing the rule:
+
+1. Five CI tests failed because `evals/gold_set.jsonl` was ignored.
+2. One CI test failed because `data/reports.csv` was ignored.
+3. Now the deployment itself, for the same missing file.
+
+The original rule was "never commit medical images or the report corpus". Safe-
+sounding, and wrong, because it treats two different reasons as one.
+
+**What I chose and why.** Wrote the policy out properly, once:
+
+- **MIMIC-CXR**: credentialed, has a data use agreement. Never commit. This
+  project does not touch it, deliberately.
+- **IU reports**: public domain (NLM Open-i), de-identified with XXXX
+  placeholders, no DUA, 1.3 MB. **Committed.** Without it the deployment has no
+  corpus at all, so BM25 retrieval over 3,826 reports and exact case lookup are
+  both dead, and the sidebar advertises them as features.
+- **IU images**: same licence, but ~500 MB. Excluded for **size**, not licence.
+  40 downscaled thumbnails ship inside `data/demo_cache.json`.
+
+Licence and size are different constraints and deserve different answers. One
+blanket rule covering both produced a repo that was cautious about the wrong
+thing while shipping a broken app.
+
+---
+
+## 2026-08-25 — One bare tool call took down the whole page
+
+**What happened.** The corpus error did not degrade a panel, it replaced the
+entire app with a red traceback. The image had rendered, the case list worked,
+the agent was ready. All of it vanished because one call in an expander was
+unguarded.
+
+**What I chose and why.** Guarded that call, then went looking for the others
+with an AST walk rather than by eye, and found two more (`image_bytes` in both
+image helpers). There is now a test that parses `app.py` and fails if any tool
+call sits outside a try/except.
+
+**Why the test rather than just the fix.** Streamlit renders an uncaught
+exception as a wall in place of the app, so the blast radius of any single
+missing file is the entire page. In a CLI a bad tool call loses you one command;
+in a Streamlit app it loses you everything the user could otherwise still do.
+That asymmetry is worth encoding as a rule rather than remembering.
+
+The agent's own `dispatch()` has had exactly this property since Weekend 2 -- it
+never raises, so one failing tool becomes a message the model recovers from. I
+wrote that principle down, then failed to apply it one layer up in the UI.

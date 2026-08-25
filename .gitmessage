@@ -1,0 +1,18 @@
+
+
+# ------------------------------------------------------------------------
+# Subject above: imperative, ~50 chars. "Fix X", not "Fixed X" or "Fixes X".
+# Blank line, then answer these three in prose. Delete these comments or
+# leave them; lines starting with # are stripped automatically.
+#
+#   1. What was wrong?   The symptom, concretely. What would someone see?
+#
+#   2. Why did it happen? The cause, not the symptom.
+#
+#   3. What did you change, and why that choice rather than the obvious
+#      alternative? This is the only part `git diff` cannot show, and the
+#      only part that will still be useful in six months.
+#
+# If you cannot write paragraph 3, you do not understand the change well
+# enough to keep it. That is the point of the rule, not a formality.
+# ------------------------------------------------------------------------

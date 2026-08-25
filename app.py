@@ -65,7 +65,10 @@ def overlay_for(case_id: str):
     """Segmentation overlay. Cached because PSPNet takes ~1s per image."""
     if DEMO_MODE:
         from radreport.tools.demo import image_bytes
-        return image_bytes(case_id, overlay=True)
+        try:
+            return image_bytes(case_id, overlay=True)
+        except ToolError:
+            return None
     path = IMAGE_DIR / f"{case_id}.dcm.png"
     if not path.exists():
         return None
@@ -81,7 +84,10 @@ def base_image_for(case_id: str):
     so the deployment needs no image files at all."""
     if DEMO_MODE:
         from radreport.tools.demo import image_bytes
-        return image_bytes(case_id, overlay=False)
+        try:
+            return image_bytes(case_id, overlay=False)
+        except ToolError:
+            return None
     return str(IMAGE_DIR / f"{case_id}.dcm.png")
 
 
@@ -198,7 +204,14 @@ with left:
                 st.image(base, width="stretch")
 
         with st.expander("Radiologist report for this case"):
-            record = get_report_by_image(case_id)
+            # Guarded: a missing corpus must degrade this one panel, not take
+            # down the whole app. It did exactly that on the first deployment,
+            # because data/reports.csv was gitignored and this call was bare.
+            try:
+                record = get_report_by_image(case_id)
+            except ToolError as exc:
+                st.warning(f"Report corpus unavailable: {exc}")
+                record = {"found": False, "note": ""}
             if record["found"]:
                 r = record["report"]
                 st.markdown(f"**Findings.** {r['findings'] or '_(none recorded)_'}")

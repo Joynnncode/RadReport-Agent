@@ -73,3 +73,29 @@ def test_adversarial_examples_populate_the_question_box(app):
 def test_no_deprecated_width_api():
     """use_container_width was removed after 2025-12-31; catch a reintroduction."""
     assert "use_container_width" not in open(APP, encoding="utf-8").read()
+
+
+def test_no_unguarded_tool_calls_in_the_ui():
+    """Any tool call outside a try/except can take the whole page down.
+
+    The deployed app crashed with a full traceback because
+    get_report_by_image was called bare and the corpus was missing. Streamlit
+    renders an uncaught exception as a red wall in place of the app, so one
+    missing file removes every other working feature from the page.
+    """
+    import ast
+
+    TOOLS = {"get_report_by_image", "segment_lungs", "classify_xray", "compute_ctr",
+             "search_reports", "search_literature", "image_bytes"}
+
+    tree = ast.parse(open(APP, encoding="utf-8").read())
+    guarded = {sub.lineno
+               for node in ast.walk(tree) if isinstance(node, ast.Try)
+               for sub in ast.walk(node) if isinstance(sub, ast.Call)}
+
+    unguarded = [f"{n.func.id} (line {n.lineno})"
+                 for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id in TOOLS and n.lineno not in guarded]
+
+    assert not unguarded, f"unguarded tool calls: {unguarded}"
