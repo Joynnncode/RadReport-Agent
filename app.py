@@ -237,10 +237,20 @@ with right:
         if st.button(label, width="stretch"):
             st.session_state["question"] = q
 
+    # Re-seed the question when the user picks a different case, but only if
+    # they have not written their own. Leaving a stale id in the box is worse
+    # than leaving it blank: the agent would go and analyse the previous case.
+    def default_question(cid: str | None) -> str:
+        return (f"Does {cid} show signs of cardiomegaly, and what does the report say?"
+                if cid else "")
+
+    previous_case = st.session_state.get("_case_id")
     if "question" not in st.session_state:
-        st.session_state["question"] = (
-            f"Does {case_id} show signs of cardiomegaly, and what does the report say?"
-            if case_id else "")
+        st.session_state["question"] = default_question(case_id)
+    elif case_id != previous_case and st.session_state["question"] in (
+            "", default_question(previous_case)):
+        st.session_state["question"] = default_question(case_id)
+    st.session_state["_case_id"] = case_id
 
     question = st.text_area("Question", height=100, key="question")
 
@@ -253,9 +263,21 @@ with right:
 
 if go and question.strip():
     entry = run_structured if structured else run
+
+    # The sidebar selection is context the model cannot see. Without this the
+    # agent has no image to work on whenever the question says "this X-ray"
+    # instead of naming a case, and correctly refuses rather than guessing one.
+    # Framed as UI state, not as an instruction, so a question that names a
+    # different case still wins.
+    message = question if not case_id else (
+        f"[UI context: the user is viewing case {case_id}. If the question "
+        f"refers to 'this image' or names no case, it means this one. If it "
+        f"names a different case, use the one they named.]\n\n{question}"
+    )
+
     try:
         with st.spinner("Running the agent loop..."):
-            result = entry(question, provider_name=provider_name,
+            result = entry(message, provider_name=provider_name,
                            max_iterations=max_iterations)
     except RuntimeError as exc:
         st.error(f"{exc}")

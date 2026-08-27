@@ -99,3 +99,45 @@ def test_no_unguarded_tool_calls_in_the_ui():
                  and n.func.id in TOOLS and n.lineno not in guarded]
 
     assert not unguarded, f"unguarded tool calls: {unguarded}"
+
+
+def _case_selectbox(at):
+    return next(s for s in at.selectbox if s.label == "Pick a case")
+
+
+def test_switching_case_reseeds_the_untouched_question():
+    """A stale case id in the box is worse than an empty box: the agent would
+    go and analyse the case the user just navigated away from."""
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.run()
+
+    box = _case_selectbox(at)
+    first = box.value
+    assert first in at.text_area[0].value
+
+    other = next(o for o in box.options if o != first)
+    box.select(other).run()
+
+    assert other in at.text_area[0].value
+    assert first not in at.text_area[0].value
+
+
+def test_switching_case_never_clobbers_a_typed_question():
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.run()
+
+    at.text_area[0].set_value("What does the corpus say about pleural effusion?").run()
+
+    box = _case_selectbox(at)
+    box.select(next(o for o in box.options if o != box.value)).run()
+
+    assert at.text_area[0].value == "What does the corpus say about pleural effusion?"
+
+
+def test_selected_case_is_passed_to_the_agent():
+    """The sidebar selection is context the model cannot otherwise see. Without
+    it, 'does this X-ray show anything?' reaches the agent with no image and it
+    correctly refuses instead of calling a tool."""
+    source = open(APP, encoding="utf-8").read()
+    assert "UI context: the user is viewing case" in source
+    assert "entry(message," in source
