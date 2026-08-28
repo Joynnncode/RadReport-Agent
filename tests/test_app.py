@@ -102,7 +102,17 @@ def test_no_unguarded_tool_calls_in_the_ui():
 
 
 def _case_selectbox(at):
-    return next(s for s in at.selectbox if s.label == "Pick a case")
+    """The case picker, or a skip.
+
+    Without a corpus the app renders an explanatory st.info and no selectbox, so
+    a bare next() raises StopIteration and the test reports a confusing crash
+    instead of "you have no data". Found by running the suite inside the Docker
+    image, where data/ is a mount rather than a checkout.
+    """
+    box = next((s for s in at.selectbox if s.label == "Pick a case"), None)
+    if box is None or len(box.options) < 2:
+        pytest.skip("needs a corpus with at least two cases; run scripts/fetch_data.py")
+    return box
 
 
 def test_switching_case_reseeds_the_untouched_question():

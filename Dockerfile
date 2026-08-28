@@ -37,17 +37,31 @@ RUN pip install --upgrade pip \
  && pip install -r requirements.txt
 
 # Pre-download model weights so the first request does not block on a fetch.
+# Same reasoning for the sentence encoder: it is only used by the non-default
+# retriever, but "only sometimes hangs on a network fetch" is worse than always.
+ENV SENTENCE_TRANSFORMERS_HOME=/opt/sbert
 RUN python -c "\
 import torchxrayvision as xrv; \
 xrv.models.DenseNet(weights='densenet121-res224-all'); \
 xrv.baseline_models.chestx_det.PSPNet(); \
+from sentence_transformers import SentenceTransformer; \
+SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2'); \
 print('weights cached')"
+
+# Weights are baked in above, so nothing should ever reach the Hub at runtime.
+# Without this the first embedding call in an air-gapped container still spends
+# ~100 seconds on HEAD requests for OPTIONAL config files, each retried five
+# times, before falling back to the cache and working. The pre-download step
+# prevented the failure and not the hang, which is the more insidious half:
+# nothing errors, the request is just inexplicably slow, once.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 COPY radreport/ ./radreport/
 COPY evals/ ./evals/
 COPY scripts/ ./scripts/
 COPY tests/ ./tests/
-COPY app.py pytest.ini README.md DECISIONS.md ./
+COPY app.py pytest.ini README.md DECISIONS.md requirements-deploy.txt ./
 
 # Data is NOT copied in. It is gitignored, it is 500 MB of medical images, and
 # baking a dataset into an image is how licence terms get violated by accident.
