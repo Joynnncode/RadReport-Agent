@@ -7,6 +7,27 @@ decides which tools to call and returns a structured, cited answer.
 > Built on the public, de-identified Indiana University Chest X-ray Collection.
 > Outputs are not validated for any clinical purpose and must not inform care.
 
+![One question, end to end: report lookup, segmentation, CTR, a cited answer, and the tool output behind it](docs/demo.gif)
+
+**[Live demo →](https://radreport-agent-daavehytdbjxdiugdja4gh.streamlit.app/)**
+
+The GIF is the reliable artefact and the link is the interactive one. Regenerate
+it with `python scripts/record_demo.py` against a local instance — headless
+Chromium driving the real UI, so it can be re-recorded after a change without
+anyone sitting and clicking.
+
+Running on Streamlit Community Cloud, which puts apps to sleep after 12 hours
+without traffic. If you get a sleep screen, click *"Yes, get this app back up!"*
+and give it a moment — anyone can wake it, not just me.
+
+The deployment runs with `RADREPORT_DEMO=1`: the imaging models are too large
+for the free tier's memory (PSPNet alone peaks around 1.8 GB against a ~1 GB
+limit), so it serves precomputed outputs from `data/demo_cache.json` — the real
+model results, computed earlier, each flagged `precomputed: true` in the UI.
+Retrieval, PubMed and the agent loop are fully live. "This model runs on your
+image in 40 ms" and "I ran this model last Tuesday on 40 images" are different
+claims, and the app does not blur them.
+
 ---
 
 ## Status
@@ -19,7 +40,7 @@ decides which tools to call and returns a structured, cited answer.
 | 3 | Structured output + grounding + retrieval comparison | done |
 | 4 | Evaluation harness | done |
 | 5 | Streamlit UI, Docker, CI | done |
-| 6 | Deploy, write-up | guide written ([docs/weekend6-shipping.md](docs/weekend6-shipping.md)) |
+| 6 | Deploy, write-up | app live; write-up outstanding ([docs/weekend6-shipping.md](docs/weekend6-shipping.md)) |
 
 ---
 

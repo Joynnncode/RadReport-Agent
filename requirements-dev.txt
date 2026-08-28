@@ -1,2 +1,8 @@
 -r requirements.txt
 ruff>=0.4
+
+# scripts/record_demo.py only: drives the real UI in headless Chromium to record
+# the demo GIF. Deliberately not in requirements.txt -- it is a browser, and
+# nothing the agent or the tools do needs one.
+#   pip install -r requirements-dev.txt && playwright install chromium
+playwright>=1.40
