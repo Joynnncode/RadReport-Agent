@@ -17,6 +17,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# One definition of "grounded", shared with the runtime validator in
+# radreport.schema. It used to live in both places, in two copies, and they
+# drifted: the eval folded unicode and markdown away, the runtime check did not,
+# so the harness and the product disagreed about what counted as a citation.
+from radreport.grounding import (  # noqa: F401  (extract_quotes re-exported)
+    check_answer, extract_quotes, normalise as _normalise,
+)
+
 
 # ---------------------------------------------------------------------------
 # 1. Tool selection
@@ -72,64 +80,8 @@ def score_tool_selection(case: dict, tool_sequence: list[str]) -> dict:
 # 2. Groundedness
 # ---------------------------------------------------------------------------
 
-_QUOTE_PATTERNS = [
-    re.compile(r'"([^"]{25,})"'),          # straight double quotes
-    re.compile(r'[“]([^”]{25,})[”]'),   # curly quotes
-    re.compile(r'`([^`]{25,})`'),          # backticks, which models like
-]
-
-
-# Typographic normalisation, applied to both the quote and the source before
-# comparison.
-#
-# Why: the first groundedness pass reported 52.9%, which looks like rampant
-# fabrication. It was not. Models rewrite punctuation as they quote -- U+2011
-# non-breaking hyphens for "well-aerated", curly apostrophes, en dashes -- and
-# they insert markdown emphasis INSIDE the quotation marks
-# ("**Heart size ... within normal limits**"). None of that changes a word.
-#
-# This check exists to catch invented clinical content, not typography. So we
-# normalise the cosmetic layer away and stay strict about the words. A metric
-# that flags eight harmless reformattings for every real fabrication is a metric
-# people learn to ignore.
-_UNICODE_FOLD = str.maketrans({
-    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-",
-    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
-    "\u201c": '"', "\u201d": '"', "\u201e": '"',
-    "\u00a0": " ", "\u2007": " ", "\u202f": " ", "\u2009": " ",
-    "\u2026": "...",
-})
-_MARKDOWN = re.compile(r"[*_`~]+")
-
-
-def _normalise(text: str) -> str:
-    text = (text or "").translate(_UNICODE_FOLD)
-    text = _MARKDOWN.sub("", text)          # emphasis inside a quote is a
-                                            # rendering choice, not a word change
-    return " ".join(text.split()).lower()
-
-
-def _collect_strings(node) -> list[str]:
-    if isinstance(node, str):
-        return [node]
-    if isinstance(node, dict):
-        return [s for v in node.values() for s in _collect_strings(v)]
-    if isinstance(node, (list, tuple)):
-        return [s for v in node for s in _collect_strings(v)]
-    return []
-
-
-def extract_quotes(answer: str) -> list[str]:
-    """Pull quoted spans out of a prose answer.
-
-    Only spans of 25+ characters: shorter ones are usually a tool name or a
-    single word in scare quotes, and treating those as citations produces noise
-    that drowns the real signal.
-    """
-    found = []
-    for pattern in _QUOTE_PATTERNS:
-        found.extend(m.group(1).strip() for m in pattern.finditer(answer or ""))
-    return [q for q in dict.fromkeys(found) if len(q) >= 25]
+# The definition of "grounded" lives in radreport.grounding, next to the runtime
+# validator that enforces it -- see score_groundedness for what this module adds.
 
 
 def score_groundedness(answer: str, tool_results: list[dict]) -> dict:
@@ -137,25 +89,26 @@ def score_groundedness(answer: str, tool_results: list[dict]) -> dict:
 
     This is the anti-fabrication check. A model that invents a report line
     produces something that reads exactly like a real radiology sentence, so the
-    only defence is mechanical: it must appear, character for character, in text
-    a tool actually produced.
+    only defence is mechanical: it must appear in text a tool actually produced.
+
+    Three counts come back rather than one, because the first version of this
+    metric reported 52.9% and that number was almost entirely punctuation:
+
+      pass       no quote is unsupported. This is the safety question, and it is
+                 the one the README should lead with.
+      verbatim   how many quotes the model copied exactly. This is a question
+                 about the model's care, not about fabrication, and reporting it
+                 as though it were the safety number is what put two mutually
+                 inconsistent groundedness figures in the README.
+      repaired   located in tool output but cosmetically altered. Carries the
+                 true source span, so the answer can be corrected rather than
+                 merely marked down.
 
     Note what this does NOT measure: an unquoted paraphrase of a real finding is
     not checked here. That is what the LLM judge is for. Stated as a limitation
     rather than papered over.
     """
-    corpus = _normalise(" \n ".join(_collect_strings(tool_results)))
-    quotes = extract_quotes(answer)
-
-    unsupported = [q for q in quotes if _normalise(q) not in corpus]
-
-    return {
-        "pass": not unsupported,
-        "quotes_found": len(quotes),
-        "unsupported": unsupported,
-        # No quotes is not a pass or a fail; it means the metric did not apply.
-        "applicable": bool(quotes),
-    }
+    return check_answer(answer, tool_results)
 
 
 # ---------------------------------------------------------------------------

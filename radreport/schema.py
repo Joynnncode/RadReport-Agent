@@ -27,6 +27,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from radreport.config import DISCLAIMER
+from radreport.grounding import Corpus, check_quote, extract_pmids
 
 
 class EvidenceSource(str, Enum):
@@ -175,90 +176,76 @@ def json_schema_for_prompt() -> dict:
 # against the trace. This is the Weekend 4 groundedness metric, implemented once
 # and used both to gate live answers and to score the eval.
 
-# Typographic normalisation, applied to both the quote and the source before
-# comparison.
-#
-# Why: the first groundedness pass reported 52.9%, which looks like rampant
-# fabrication. It was not. Models rewrite punctuation as they quote -- U+2011
-# non-breaking hyphens for "well-aerated", curly apostrophes, en dashes -- and
-# they insert markdown emphasis INSIDE the quotation marks
-# ("**Heart size ... within normal limits**"). None of that changes a word.
-#
-# This check exists to catch invented clinical content, not typography. So we
-# normalise the cosmetic layer away and stay strict about the words. A metric
-# that flags eight harmless reformattings for every real fabrication is a metric
-# people learn to ignore.
-_UNICODE_FOLD = str.maketrans({
-    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-",
-    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",
-    "\u201c": '"', "\u201d": '"', "\u201e": '"',
-    "\u00a0": " ", "\u2007": " ", "\u202f": " ", "\u2009": " ",
-    "\u2026": "...",
-})
-_MARKDOWN = re.compile(r"[*_`~]+")
-
-
-def _normalise_whitespace(text: str) -> str:
-    text = (text or "").translate(_UNICODE_FOLD)
-    text = _MARKDOWN.sub("", text)          # emphasis inside a quote is a
-                                            # rendering choice, not a word change
-    return " ".join(text.split()).lower()
-
-
-def _collect_strings(node) -> list[str]:
-    """Pull every string leaf out of nested tool results.
-
-    Deliberately NOT str(node) or json.dumps(node): both render a dict with
-    repr(), which turns a real newline inside a report into the two characters
-    backslash-n. A quote that spans a line break would then fail to match and a
-    genuine citation would be reported as fabricated. Walking the structure
-    keeps the text as text.
-    """
-    if isinstance(node, str):
-        return [node]
-    if isinstance(node, dict):
-        return [s for v in node.values() for s in _collect_strings(v)]
-    if isinstance(node, (list, tuple)):
-        return [s for v in node for s in _collect_strings(v)]
-    return []
-
-
 def verify_grounding(answer: AgentAnswer, tool_results: list[dict]) -> dict:
     """Check every quoted piece of evidence against what the tools returned.
 
     A model that invents a plausible report line is the single most dangerous
     failure mode in this system, because the invention will read exactly like a
-    real radiology sentence. The only defence is mechanical: the quote must
-    appear, character for character, in text a tool actually produced.
+    real radiology sentence. The only defence is mechanical.
+
+    The comparison itself lives in radreport.grounding, shared with the eval
+    harness, because the runtime check and the metric measuring it must agree by
+    construction. When they were two copies they disagreed, and the metric was
+    the stricter of the two -- so the harness reported fabrication where the
+    product had (correctly) seen a real citation with a curly apostrophe in it.
+
+    Each quote comes back as verbatim, repaired or unsupported. Only unsupported
+    breaks grounding; a repaired quote is a real span of tool output that the
+    model retyped imperfectly, and it carries the true span so the caller can
+    substitute it.
 
     Returns a report rather than raising, because the caller decides what to do:
-    the agent retries, the eval harness scores.
+    the agent repairs and retries, the eval harness scores.
     """
-    corpus = _normalise_whitespace(
-        " \n ".join(_collect_strings(tool_results))
-    )
+    corpus = Corpus(tool_results)
 
-    checked, unsupported = 0, []
+    checked, unsupported, repaired, bad_citations = 0, [], [], []
     for finding in answer.findings:
         for ev in finding.evidence:
+            # A literature citation is checked even though it carries no quote.
+            # An Evidence entry claiming PMID 12456789 is making a factual claim
+            # about the world, and it is a more checkable one than any sentence:
+            # the identifier either came out of search_literature or it did not.
+            # Only quotes were checked here, so the prose path caught fabricated
+            # PMIDs and the structured path -- the one with a schema and
+            # validators, the one that is supposed to be STRICTER -- did not.
+            for pmid in extract_pmids(f"PMID: {ev.citation}" if ev.citation else ""):
+                if pmid not in corpus.raw:
+                    bad_citations.append({"label": finding.label,
+                                          "source": ev.source.value,
+                                          "citation": ev.citation})
+
             if not ev.quote:
                 continue
             checked += 1
-            if _normalise_whitespace(ev.quote) not in corpus:
+            verdict = check_quote(ev.quote, corpus)
+            if verdict.status == "unsupported":
                 unsupported.append({
                     "label": finding.label,
                     "source": ev.source.value,
                     "quote": ev.quote,
+                    "closest_similarity": verdict.similarity,
+                })
+            elif verdict.status == "repaired":
+                repaired.append({
+                    "label": finding.label,
+                    "quote": ev.quote,
+                    "actual_source_text": verdict.source,
+                    "similarity": verdict.similarity,
                 })
 
+    problems = len(unsupported) + len(bad_citations)
     return {
-        "grounded": not unsupported,
+        "grounded": not problems,
         "quotes_checked": checked,
+        "quotes_verbatim": checked - len(unsupported) - len(repaired),
+        "repaired_quotes": repaired,
         "unsupported_quotes": unsupported,
+        "unsupported_citations": bad_citations,
         "note": (
             "All quoted evidence appears in tool output."
-            if not unsupported
-            else f"{len(unsupported)} quote(s) do not appear in any tool result "
+            if not problems
+            else f"{problems} claim(s) do not appear in any tool result "
                  "and may be fabricated."
         ),
     }
