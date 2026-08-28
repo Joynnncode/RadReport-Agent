@@ -97,7 +97,12 @@ def test_deploy_requirements_exclude_torch():
     lines = [l.split("#")[0].strip()
              for l in (REPO_ROOT / "requirements-deploy.txt").read_text().lower().splitlines()]
     deps = " ".join(l for l in lines if l)
-    for heavy in ("torch", "torchvision", "torchxrayvision", "scikit-image"):
+    # sentence-transformers is on this list because it depends on torch: adding
+    # the dense retriever to the deploy set would reintroduce the 820 MB the
+    # whole demo-mode design exists to avoid, and it would do it transitively,
+    # where a reader scanning the file for "torch" would not see it.
+    for heavy in ("torch", "torchvision", "torchxrayvision", "scikit-image",
+                  "sentence-transformers"):
         assert heavy not in deps, f"{heavy} would blow the free-tier memory limit"
 
 

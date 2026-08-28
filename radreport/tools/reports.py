@@ -5,11 +5,17 @@ documents that contain the query's rare words, discounts common ones, and
 normalises for document length. It has no idea that "cardiomegaly" and "enlarged
 heart" mean the same thing.
 
-That limitation is the POINT of starting here. Weekend 3 adds an embedding
-retriever which does understand that, and you measure whether it actually wins
-on this corpus. A baseline you can beat is worth more than a clever system you
-cannot evaluate. Radiology reports use a small, highly standardised vocabulary,
-so BM25 is a genuinely strong baseline here, and it may not lose.
+That limitation is the POINT of starting here. A baseline you can beat is worth
+more than a clever system you cannot evaluate.
+
+The embedding retriever now exists alongside it (`retriever="embedding"`), and
+the guess above has been measured -- `evals/retrieval_compare.py` runs both over
+the same queries and `docs/retrieval-comparison.md` reports what came out.
+BM25 remains the DEFAULT, and the results are the reason: radiology reports use
+a small, highly standardised vocabulary, so on queries that use that vocabulary
+BM25 is not merely competitive, it wins. It loses exactly where predicted, on
+paraphrase, which is why the fused retriever is the one to reach for when you do
+not control how the query is phrased.
 """
 
 from __future__ import annotations
@@ -132,31 +138,102 @@ def _index(csv_path: str | None = None) -> tuple[BM25Okapi, tuple[Report, ...]]:
     return bm25, tuple(corpus)
 
 
-def search_reports(query: str, k: int = 3, csv_path: str | None = None) -> dict:
-    """Return the k best-matching radiologist reports for a free-text query."""
-    if not query or not query.strip():
-        raise ToolError("Query was empty.", tool="search_reports")
+RETRIEVERS = ("bm25", "embedding", "hybrid")
 
+# Cosine floor for the dense retriever, the counterpart to BM25's natural zero.
+#
+# BM25 scores exactly 0 when no query term appears, so "no match" is free. Cosine
+# has no such floor: an unrelated query still returns its k nearest neighbours,
+# and search_reports would report "3 report(s) matched" for a question about
+# bicycles. Measured over this corpus, the two populations separate cleanly:
+#
+#     relevant   'pleural effusion' 0.683   'enlarged heart' 0.779   'broken rib' 0.601
+#     nonsense   'zebra xylophone'  0.205   'quarterly revenue forecast' 0.117
+#
+# 0.35 sits in the gap, well above the best nonsense and well below the worst
+# genuine hit. Reproduce the measurement before changing it.
+EMBEDDING_FLOOR = 0.35
+
+
+@lru_cache(maxsize=2)
+def _embedding_index(csv_path: str | None = None):
+    """Dense index over the same text BM25 sees. Built lazily and cached.
+
+    Lazily because it costs a model load and, on a cold cache, a minute of
+    encoding -- and the default retriever never touches it. A tool that pays for
+    a capability nobody asked for on every import is a tool people stop importing.
+    """
+    from radreport.tools.embed import EmbeddingIndex
+    _, corpus = _index(csv_path)
+    return EmbeddingIndex([r.index_text for r in corpus])
+
+
+def rank_bm25(query: str, csv_path: str | None = None) -> tuple[list[int], list[float]]:
+    """Document ids best-first, with their scores."""
     bm25, corpus = _index(csv_path)
     tokens = tokenize(query)
     if not tokens:
         raise ToolError(
             f"Query {query!r} contained no indexable terms.", tool="search_reports"
         )
-
     scores = bm25.get_scores(tokens)
-    ranked = sorted(range(len(corpus)), key=lambda i: -scores[i])[: max(1, k)]
+    order = sorted(range(len(corpus)), key=lambda i: -scores[i])
+    return order, [float(scores[i]) for i in order]
 
-    hits = []
-    for rank, i in enumerate(ranked, start=1):
-        if scores[i] <= 0:
-            continue        # BM25 gives 0 when no query term appears at all
-        hits.append({"rank": rank, "score": round(float(scores[i]), 3), **asdict(corpus[i])})
+
+def rank_embedding(query: str, csv_path: str | None = None) -> tuple[list[int], list[float]]:
+    scores = _embedding_index(csv_path).scores(query)
+    order = sorted(range(len(scores)), key=lambda i: -scores[i])
+    return order, [float(scores[i]) for i in order]
+
+
+def search_reports(query: str, k: int = 3, csv_path: str | None = None,
+                   retriever: str = "bm25") -> dict:
+    """Return the k best-matching radiologist reports for a free-text query.
+
+    `retriever` selects lexical ("bm25", the default), dense ("embedding") or
+    both fused by reciprocal rank ("hybrid"). The default is lexical because
+    that is what the measurement supported, not because it was written first:
+    see docs/retrieval-comparison.md.
+    """
+    if not query or not query.strip():
+        raise ToolError("Query was empty.", tool="search_reports")
+    if retriever not in RETRIEVERS:
+        raise ToolError(
+            f"Unknown retriever {retriever!r}. One of: {', '.join(RETRIEVERS)}.",
+            tool="search_reports",
+        )
+
+    _, corpus = _index(csv_path)
+    top = max(1, k)
+
+    if retriever == "bm25":
+        order, scores = rank_bm25(query, csv_path)
+        # BM25 gives exactly 0 when no query term appears at all. That is a real
+        # "no match" rather than a weak one, so those are dropped rather than
+        # returned as the best of a bad set.
+        pairs = [(i, sc) for i, sc in zip(order[:top], scores[:top]) if sc > 0]
+    elif retriever == "embedding":
+        order, scores = rank_embedding(query, csv_path)
+        pairs = [(i, sc) for i, sc in zip(order[:top], scores[:top])
+                 if sc >= EMBEDDING_FLOOR]
+    else:
+        bm_order, _ = rank_bm25(query, csv_path)
+        em_order, _ = rank_embedding(query, csv_path)
+        from radreport.tools.embed import reciprocal_rank_fusion
+        # Fuse only the heads: the tail of a 3,826-document ranking is noise in
+        # both retrievers, and including it lets a document neither ranked highly
+        # accumulate its way up on two mediocre positions.
+        fused = reciprocal_rank_fusion([list(bm_order[:50]), list(em_order[:50])])
+        pairs = [(i, sc) for i, sc in fused[:top]]
+
+    hits = [{"rank": rank, "score": round(float(score), 4), **asdict(corpus[i])}
+            for rank, (i, score) in enumerate(pairs, start=1)]
 
     return {
         "ok": True,
         "query": query,
-        "retriever": "bm25",
+        "retriever": retriever,
         "corpus_size": len(corpus),
         "hits": hits,
         "note": (

@@ -8,6 +8,10 @@ numpy>=1.26
 
 # --- retrieval layer ---
 rank-bm25>=0.2.2
+# Dense retriever. BM25 remains the default -- see docs/retrieval-comparison.md
+# for the measurement that decided that -- but the comparison has to be
+# reproducible from a clean install or the numbers in that doc are unfalsifiable.
+sentence-transformers>=3.0
 pandas>=2.1
 
 # --- agent layer ---

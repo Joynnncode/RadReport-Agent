@@ -6,6 +6,10 @@
 # imaging results from data/demo_cache.json instead.
 #
 # Retrieval, PubMed and the agent loop are fully live: none of them need torch.
+# The BM25 retriever is the live one and it is also the default (it measured
+# better on clinical vocabulary -- docs/retrieval-comparison.md). The dense
+# retriever is absent because sentence-transformers pulls torch in transitively;
+# asking for retriever="embedding" here raises a ToolError that says so.
 #
 # Local development uses requirements.txt, which has everything.
 
