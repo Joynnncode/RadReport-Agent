@@ -160,3 +160,44 @@ def test_grounding_ignores_whitespace_and_case():
         label="C", present="suggested",
         evidence=[Evidence(source="report", detail="d", quote="the heart is enlarged.")])])
     assert verify_grounding(answer, tool_results)["grounded"] is True
+
+
+def test_a_fabricated_pmid_in_structured_evidence_breaks_grounding():
+    """The structured path has a schema and validators, so it is supposed to be
+    the STRICTER of the two. It was not: only quotes were checked, so the prose
+    path caught fabricated PMIDs and this one waved them through.
+
+    An Evidence entry citing PMID 12456789 makes a factual claim about the
+    world, and a more checkable one than any sentence: the identifier either
+    came out of search_literature or it did not.
+    """
+    answer = AgentAnswer(
+        summary="AP films magnify the cardiac silhouette.",
+        findings=[Finding(
+            label="AP magnification",
+            present="indeterminate",
+            evidence=[Evidence(source="literature",
+                               detail="search_literature: projection effect",
+                               citation="12456789")],
+        )],
+    )
+    tool_results = [{"ok": True, "hits": [{"pmid": "7541234", "title": "A real paper"}]}]
+
+    report = verify_grounding(answer, tool_results)
+    assert report["grounded"] is False
+    assert report["unsupported_citations"][0]["citation"] == "12456789"
+
+
+def test_a_real_pmid_in_structured_evidence_is_accepted():
+    answer = AgentAnswer(
+        summary="AP films magnify the cardiac silhouette.",
+        findings=[Finding(
+            label="AP magnification",
+            present="indeterminate",
+            evidence=[Evidence(source="literature",
+                               detail="search_literature: projection effect",
+                               citation="7541234")],
+        )],
+    )
+    tool_results = [{"ok": True, "hits": [{"pmid": "7541234", "title": "A real paper"}]}]
+    assert verify_grounding(answer, tool_results)["grounded"] is True
