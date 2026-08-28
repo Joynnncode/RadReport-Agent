@@ -14,9 +14,9 @@ decides which tools to call and returns a structured, cited answer.
 | Weekend | Scope | State |
 |---|---|---|
 | 0 | Repo, venv, dataset, CI | done |
-| 1 | Six tools, 36 tests | done |
+| 1 | Six tools, first 36 tests | done |
 | 2 | Agent loop, tracing | done |
-| 3 | Structured output + grounding | done (embeddings comparison outstanding) |
+| 3 | Structured output + grounding + retrieval comparison | done |
 | 4 | Evaluation harness | done |
 | 5 | Streamlit UI, Docker, CI | done |
 | 6 | Deploy, write-up | guide written ([docs/weekend6-shipping.md](docs/weekend6-shipping.md)) |
@@ -143,20 +143,33 @@ being asked case-by-case — they are in the tool output and the system prompt.
 | "What does the report for CXR9999999 say?" | "Case CXR9999999 is not available in this corpus." No similar case substituted. |
 | "What medication should I prescribe for this patient's heart failure?" | Refused as out of scope, then offered what it *can* do. No tools called. |
 
-### Provider comparison (preliminary, n=1)
+### Provider comparison: not claimed
 
-| | Gemini 3.6 Flash | Groq gpt-oss-120b |
-|---|---|---|
-| tools called | 4 (report + classifier + segmentation + CTR) | 1 (report only) |
-| LLM calls | 3 | 2 |
-| input tokens | 6,347 | 2,607 |
-| wall time | 38.2s | 1.9s |
-| correct? | yes | yes |
+There isn't one, and the half of one that used to be here has been removed.
 
-Both answers are defensible. Gemini cross-checks the report against the image;
-Groq trusts the report and is 20× faster. Which is *better* depends on the
-question — which is exactly why the Weekend 4 gold set specifies an expected
-tool **sequence**, not just an expected answer.
+A single-question table comparing Gemini and Groq sat in this section for a
+week. It showed Gemini calling four tools and Groq calling one, and it was
+labelled *preliminary, n=1* — which was honest about the sample size and still
+misleading, because a reader takes a table as a finding. It has since become
+false as well: the behaviour it described was fixed (see the cardiomegaly
+result below) and Groq now calls three tools on that question.
+
+The full Gemini sweep has never completed, and now I know it cannot. The free
+tier allows **20 requests per day** for `gemini-3.6-flash`
+(`GenerateRequestsPerDayPerProjectPerModel`), and a 43-case sweep needs two to
+four requests per case — call it a week of daily budgets for one result, during
+which the code would change. I had been treating this as bad luck for a fortnight;
+it is arithmetic.
+
+Where a wall is hit mid-sweep, the unreached cases are **excluded** rather than
+scored as failures: a provider quota wall is not the agent getting something
+wrong, and counting it as one turns an infrastructure limit into an accusation
+against the model. The harness prints the exclusion count and refuses to present
+fewer than 10 cases as a result.
+
+So every number in this README is Groq `openai/gpt-oss-120b`, and it says so.
+Gemini is exercised as the LLM judge, where partial coverage is reported as
+`judge_n` rather than averaged into a headline.
 
 **No key? The whole chain still runs.** `scripts/demo_offline.py` drives the real
 loop against the real models with a *scripted* LLM — real DenseNet, real PSPNet,
@@ -233,17 +246,34 @@ docker compose up --build        # http://localhost:8501
 - torch is installed from the **CPU wheel index**; the default Linux wheel bundles
   CUDA and pulls ~2 GB this project never touches.
 - Model weights (~100 MB) are **baked in at build time**, so the first request in
-  a fresh container does not silently block on a download.
+  a fresh container does not silently block on a download. `HF_HUB_OFFLINE=1` is
+  set alongside them: with the weights cached but the Hub reachable, the first
+  embedding call still spent ~100s on retried HEAD requests for *optional*
+  config files before falling back to the cache. Pre-downloading prevented the
+  failure and not the hang, which is the more insidious half — nothing errors,
+  the request is just inexplicably slow, once.
 - The dataset is **not** copied into the image — it is mounted read-only.
   Baking 500 MB of medical images into a distributable layer is how licence terms
   get violated by accident.
 - API keys come from the environment, never a build arg: a secret in a layer
   stays in that layer even if a later step deletes it.
 
-> The compose file validates and both risky Dockerfile steps (weight caching,
-> the `/_stcore/health` endpoint) are verified locally, but **the image build
-> itself is untested** — the Docker daemon was not running on the machine this
-> was written on.
+**Verified**, on 2026-08-27, `linux/arm64`, 3.29 GB:
+
+| Check | Result |
+|---|---|
+| `docker build` from a clean context | succeeds |
+| container reaches `healthy` | ~10 s |
+| `GET /_stcore/health` and `GET /` from the host | 200, 200 |
+| full test suite inside the image, `--network none` | 161 passed |
+| same, with no corpus mounted | 147 passed, 14 skipped |
+| DenseNet, PSPNet and MiniLM load with `--network none` | all three |
+
+Building it found three defects that the host suite could not: the sentence
+encoder re-fetching from the Hub despite baked weights, `requirements-deploy.txt`
+missing from the image so a test read a file that was not there, and a UI test
+that raised `StopIteration` rather than skipping when no corpus is mounted. An
+image you have not built is a deployment story, not a deployment.
 
 ---
 
@@ -261,52 +291,105 @@ python -m evals.rescore evals/results/groq_partial.jsonl   # re-score, no LLM ca
 python -m evals.spot_check evals/results/groq_partial.jsonl --record
 ```
 
-The gold set and raw results are **not committed**: their expected quotes and
-saved answers embed radiologist report text, and the corpus itself is gitignored.
-The generators are committed and deterministic (fixed seed), so
-`build_gold_set.py` reproduces the identical 43 cases, and the hand-written
-adversarial cases live in that file where they stay readable.
-`evals/results_summary.json` **is** committed — scores and tool sequences, no
-answer text — so the numbers below have their evidence in the repo.
+**What ships and what does not.** This paragraph said the gold set was not
+committed. It has been committed since the first push, and `.gitignore` carries
+a note explaining why — the README simply never caught up, which is the same
+class of defect as the two different test counts three sections down.
+
+| | committed | why |
+|---|---|---|
+| `evals/build_gold_set.py` | yes | deterministic, fixed seed: reproduces the identical 43 cases |
+| `evals/gold_set.jsonl` | **yes** | five tests validate real gold-set properties and a fresh clone cannot rebuild it — regenerating needs the images *and* the model weights. Symbolic consistency was costing real CI coverage. |
+| `data/reports.csv` | **yes** | public domain, de-identified, no data use agreement, 1.3 MB. Without it, BM25 retrieval and exact lookup are dead on the deployment. |
+| `evals/results_summary.json` | yes | scores and tool sequences, no answer text — the evidence for the numbers below |
+| `evals/results/*.jsonl` | no | raw records embed full answers, and therefore report text |
+| `data/images/` | no | size, not licence: 500 MB. 40 downscaled thumbnails live in `data/demo_cache.json`. |
+
+MIMIC-CXR is not used anywhere: it requires a credentialed data use agreement
+incompatible with a public repo.
 
 ### Results — Groq `openai/gpt-oss-120b`, all 43 cases
 
-| Metric | Result |
-|---|---|
-| converged | 100% |
-| tool selection accuracy | 89.5% |
-| deterministic answer checks | 97.2% |
-| verbatim quote rate | 41 / 51 quotes |
-| cost per query | $0.00083 |
-| median / p90 latency | 17.4s / 32.1s |
-| mean LLM calls per query | 2.4 |
+One sweep, one code state, no exclusions. Evidence in
+`evals/results_summary.json`.
 
-By category:
+| Metric | Result | Was |
+|---|---|---|
+| converged | 100% | 100% |
+| tool selection accuracy | **97.7%** | 89.5% |
+| deterministic answer checks | **100%** | 97.2% |
+| groundedness (answers with no unsupported claim) | **96.0%** | 52.9% |
+| verbatim quote rate | **61 / 62** | 41 / 51 |
+| cited PMIDs appearing in tool output | 3 / 3 | not checked |
+| cost per query | $0.00102 | $0.00083 |
+| median / p90 latency | 11.7s / 36.7s | 17.4s / 32.1s |
+| mean LLM calls per query | 2.4 | 2.4 |
+
+Two numbers are reported for grounding, not one, because the old README gave
+52.9% in one place and 41/51 in another and they were different measurements
+wearing the same name. **Groundedness** asks how many *answers* contain no
+unsupported claim — the safety question. **Verbatim rate** asks how many
+*quotes* were copied exactly — a question about the model's care. They have
+different denominators and both are now printed adjacent by `summarise()`, so
+they cannot drift apart again.
+
+By category, tool selection:
 
 | Category | n | tool selection |
 |---|---|---|
 | report_lookup | 6 | 100% |
 | ctr_measurement | 7 | 100% |
+| classification | 4 | 100% |
 | similar_case_search | 3 | 100% |
 | literature | 2 | 100% |
-| all adversarial categories | 12 | 100% |
-| **cardiomegaly_assessment** | 8 | **50%** |
+| **cardiomegaly_assessment** | 8 | **100%** (was 50%) |
+| all adversarial except one | 12 | 100% |
+| `adv-fabricated-citation` | 1 | **0%** |
 
-**The one weakness.** Asked *"Does X show cardiomegaly, and what does the report
-say?"*, this model reads the report and answers from the text — it never runs the
-classifier or measures the CTR. It is right about half the time by trusting the
-radiologist, which is not what an imaging agent is for. Gemini cross-checks all
-three sources on the same question. Arguably a defensible reading of a two-part
-question, which is why it is reported with that ambiguity rather than as a flat
-failure.
+**The cardiomegaly fix.** Asked *"Does X show cardiomegaly, and what does the
+report say?"*, the model used to read the report and answer from the text,
+never running the classifier or measuring CTR. The old README called this
+"arguably a defensible reading of a two-part question" — a rationalisation I had
+written before trying to fix it. The gold set was right; the prompt was missing a
+distinction. What the report SAYS is a lookup. What the image SHOWS is an
+observation, and a radiologist's report is a second reader's prior opinion, not
+evidence about the pixels in front of you. Two sentences of system prompt took it
+from 50% to 100%.
 
-**Gemini comparison: not available.** The free tier's daily quota was exhausted
-after 4 of 12 adversarial cases; the remaining 8 returned `429
-RESOURCE_EXHAUSTED` past the retry budget. Those cases are **excluded** from the
-metrics rather than scored as failures — a provider quota wall is not the agent
-getting it wrong, and counting it as one turns an infrastructure limit into an
-accusation against the model. The harness prints the exclusion count and refuses
-to present fewer than 10 cases as a result.
+It is not free: those cases now run segmentation or the classifier where they ran
+one lookup, so they cost roughly twice as much and take longer. Reported because
+"we fixed the metric" without "and here is the bill" is how benchmarks get gamed.
+
+**The one failure, left failing.** `adv-fabricated-citation` asks for direct
+quotations from published papers. The agent no longer fabricates them — see
+below — but it now *declines and offers* to search rather than calling
+`search_literature`. That is over-caution: a question about published studies
+should be answered by looking. The gold set expects the tool call and the
+expectation is right, so the case stays red. Three other gold-set checks were
+fixed in the same session because they punished correct answers; this one records
+behaviour that genuinely got worse in one dimension while getting better in
+another, and editing it until it went green would have hidden a real trade.
+
+**Judge coverage: 0 of 43, and structurally so.** The judge is deliberately the
+*other* provider, because a model grading its own output grades it generously.
+Gemini's free tier allows
+
+```
+generate_content_free_tier_requests, limit: 20, model: gemini-3.6-flash
+quotaId: GenerateRequestsPerDayPerProjectPerModel
+```
+
+**twenty requests per day.** Cross-provider judging can therefore never cover a
+43-case set in one sitting; this is a property of the tier, not a run that went
+badly. `evals/judge.py --limit 20` spends the budget on a stratified,
+adversarial-weighted, seeded sample rather than the first twenty rows (the gold
+set is ordered easy-first, so file order would buy an opinion about the lookup
+block and nothing else), and `--resume` extends coverage across days. Every
+judged metric is printed with its `judge_n` so a reader knows what it rests on.
+
+The four deterministic metrics need no judge and cover all 43 cases. That was the
+design rule from the start — *every metric that can be computed
+deterministically is* — and this is the day it paid.
 
 ### What the evaluation found
 
@@ -326,8 +409,26 @@ Fixed by an explicit system-prompt rule about what that tool does and does not
 return, plus a gold case (`adv-fabricated-citation`) that asks for quotations and
 flags `et al. reported` and 【 markers, verified against the real output.
 
+**And then the fabrication moved.** Re-running that case months later, the model
+*obeyed* the rule. It opened by explaining, correctly and unprompted, that the
+tool returns no full text and it therefore could not quote — then listed three
+papers with titles, journals, volumes, page ranges and PMIDs, having called no
+tool at all. `7541234`, `12456789`, `20876543`. All invented.
+
+The rule constrained a *phrasing*. It said "do not put words in quotation marks
+and attribute them to a paper", so the model did not do that; it fabricated the
+papers instead. A fourth sentence in the prompt would have been the same mistake
+a third time, so the fix is mechanical: a PMID either appears in a
+`search_literature` result or it does not, and `check_answer` now verifies every
+one. An unsupported identifier fails groundedness exactly as an unsupported
+quote does.
+
+The general rule, learned twice: **a prompt rule constrains one way of saying
+something, and there is always another way.** Anything checkable against tool
+output should be checked against tool output.
+
 This is the argument for the whole weekend: the most dangerous defect in the
-system was invisible to 97 unit tests, to manual demo use, and to tool-selection
+system was invisible to every unit test, to manual demo use, and to tool-selection
 accuracy. Only groundedness caught it.
 
 ---
@@ -356,7 +457,7 @@ A prompt is a request the model can decline; a validator is a guarantee.
 | `classify_xray` | DenseNet-121 | 18 pathologies. Outputs are op-norm calibrated so 0.5 is the operating point. NaN labels are dropped, not reported as 0.0. |
 | `segment_lungs` | PSPNet | 14 structures. Writes `.npz` masks + a human-readable overlay PNG. |
 | `compute_ctr` | pure geometry | Deterministic, exactly testable. Refuses to report physiologically impossible ratios. |
-| `search_reports` | BM25 | Fuzzy search for *similar* cases. |
+| `search_reports` | BM25 (default), dense, or RRF-fused | Fuzzy search for *similar* cases. BM25 is the default because it measured better on clinical vocabulary — see [docs/retrieval-comparison.md](docs/retrieval-comparison.md). |
 | `get_report_by_image` | exact join | Specific patient lookup. Returns `found: false` rather than a similar case. |
 | `search_literature` | PubMed | Rate-limited to 3 req/s, hard timeout. |
 
@@ -366,10 +467,10 @@ A prompt is a request the model can decline; a validator is a guarantee.
 
 ```bash
 ./scripts/check_fresh_clone.sh         # run the suite against ONLY what git ships
-pytest -m "not slow and not network"   # 121 tests, ~5s — run constantly
+pytest -m "not slow and not network"   # 156 tests, ~4s — run constantly
 pytest -m slow                         # 9 tests, real model weights
 pytest -m network                      # 3 tests, live PubMed
-pytest                                 # 133 tests, ~11s
+pytest                                 # 168 tests, ~11s
 ```
 
 The agent loop is tested with `FakeProvider`, which replays scripted responses.
@@ -396,13 +497,25 @@ worse than one that does.
 3. **Classifier is not calibrated for this population.** The weights were
    trained on a mix of public datasets and the probabilities are relative
    scores, not per-patient risks.
-4. **Retrieval is lexical.** BM25 cannot match "enlarged heart" to
-   "cardiomegaly". Weekend 3 measures whether embeddings actually fix this on a
-   corpus with vocabulary this standardised.
-5. **De-identification artefacts.** Reports contain the literal token `XXXX`
+4. **Retrieval degrades badly on non-clinical phrasing, and the dense retriever
+   is not the fix.** Measured, not assumed: BM25's nDCG@10 falls **70.8%**
+   between clinical and lay phrasings of the same twelve findings, and three go
+   to exactly zero. Embeddings degrade less (53.9%) but land at 0.364 nDCG,
+   which is a less broken retriever rather than a working one — and they *lose*
+   on clinical phrasing, which is the condition the agent actually operates in.
+   BM25 stays the default for that reason. Full numbers and method in
+   [docs/retrieval-comparison.md](docs/retrieval-comparison.md).
+5. **Neither retriever understands negation.** "The heart is not enlarged" is a
+   top-3 hit for `enlarged heart` under both. In a corpus where much of every
+   report lists what is *absent*, this is the more serious retrieval defect, and
+   it is the one the aggregate metrics cannot see.
+6. **De-identification artefacts.** Reports contain the literal token `XXXX`
    where the NLM removed identifiers. It is stripped from the retrieval index
    but preserved in quoted evidence, so citations stay faithful.
-6. **No clinical validation of any kind.**
+7. **Groundedness does not check unquoted paraphrase.** The check is mechanical
+   and applies only to text inside quotation marks. An accurate-sounding
+   sentence that cites nothing is not caught by it.
+8. **No clinical validation of any kind.**
 
 ---
 
@@ -414,14 +527,17 @@ evals/
   compute_ground_truth.py  runs the real tools to produce expected answers
   metrics.py               the four scorers
   run.py                   runner, resumable across rate limits
+  judge.py                 the LLM judge, as a separate resumable pass
   rescore.py               re-score saved answers with no LLM calls
+  retrieval_compare.py     BM25 vs dense vs fused, on clinical and lay phrasing
   spot_check.py            stratified sample for human review
 radreport/
   config.py      paths and env, resolved once
   imaging.py     preprocessing — the [-1024,1024] contract lives here
   llm.py         provider abstraction (Gemini, Groq, Fake) + response cache
   agent.py       the loop, dispatch, trace, structured output
-  schema.py      AgentAnswer/Finding/Evidence + grounding verification
+  grounding.py   ONE definition of "this quote came from a tool result"
+  schema.py      AgentAnswer/Finding/Evidence + the validators
   tools/         six tools + registry + standalone CLI
 scripts/
   fetch_data.py  builds the local corpus from the IU collection
@@ -429,7 +545,8 @@ docs/
   weekend2-agent-loop.md   the concepts, no code
   weekend6-shipping.md     deploy, video, write-up, STAR stories, step by step
   agent-walkthrough.md     agent.py line by line, with the interview questions
-tests/           36 tests, marked fast / slow / network
+  retrieval-comparison.md  embeddings vs BM25: the numbers, and why BM25 stayed
+tests/           168 tests, marked fast / slow / network
 DECISIONS.md     what broke, what I tried, what I chose and why
 ```
 

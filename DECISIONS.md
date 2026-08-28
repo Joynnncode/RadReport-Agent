@@ -940,3 +940,553 @@ That asymmetry is worth encoding as a rule rather than remembering.
 The agent's own `dispatch()` has had exactly this property since Weekend 2 -- it
 never raises, so one failing tool becomes a message the model recovers from. I
 wrote that principle down, then failed to apply it one layer up in the UI.
+
+---
+
+## 2026-08-27 — The worst number in the README was measuring punctuation
+
+**What happened.** Groundedness read 52.9% — the single ugliest figure in a
+project whose whole pitch is verifiable grounding. The README also said
+41/51 quotes were verbatim, which is 80%. Two numbers, same run, no way for a
+reader to tell which was the claim.
+
+Both were true, and neither was right.
+
+The 41/51 was quote-level and the 52.9% was case-level — different denominators
+presented as if they were the same measurement, which is a reporting failure on
+its own. But the case-level number was also computed by a definition that no
+longer existed anywhere in the codebase. `metrics.py` had grown unicode and
+markdown folding at 23:36 on 21 August; the groq run had finished at 23:35. The
+run's stored verdicts were from the strict version, and `rescore.py` — the tool
+whose entire purpose is re-scoring saved answers under a fixed metric — could
+not fix them, because groundedness is the one metric that needs the tool
+results, and those records predated the `trace_path` field. So it silently kept
+the original verdict. The fix to the metric had been shipped, tested, and had
+no effect on the number anyone read.
+
+**What I found when I recovered it.** The traces were still on disk, and their
+`start` event records the question, so all 38 records could be matched back to a
+unique trace and re-scored. Under the current metric: 70.6%. Under the metric
+after this session's work: 88.2%, with a verbatim rate of 82.4%.
+
+Every point of that recovery was punctuation:
+
+| quote | source | difference |
+|---|---|---|
+| `mildly enlarged for technique.` | `...mildly enlarged for technique,` | a full stop |
+| `No acute cardiopulmonary disease.` | `no acute cardiopulmonary disease` | a full stop |
+| `follow‑up imaging in 6 months` | `followup imaging in 6 months` | a hyphen the model added |
+| `7 mm right upper lobe lung nodule` | same, U+202F vs space | invisible |
+
+Two real defects survived, and they are the two worth having a metric for: the
+fabricated literature quotations, and one answer that welded two non-adjacent
+sentences into a single quotation behind an ellipsis.
+
+**What I chose and why.** Three things.
+
+*One definition, one place.* `radreport/grounding.py` now holds the check, and
+both `schema.verify_grounding` (runtime) and `evals.metrics` (offline) call it.
+They had been two copies of a safety rule with two different normalisation
+tables, which meant the harness could report fabrication where the product had
+correctly seen a real citation. Two copies of a safety rule is one safety rule
+plus a bug waiting to be written.
+
+*Three verdicts per quote, not one bit per answer.* `verbatim`, `repaired`,
+`unsupported`. Grounded means no unsupported quotes; verbatim rate is reported
+next to it with its own denominator. The two figures can no longer disagree
+because `summarise()` computes both from the same records and `print_summary`
+prints them adjacent.
+
+*Repair, not tolerance.* A near-miss quote is matched back to its source span
+and the answer is rewritten to the radiologist's actual characters, traced as a
+`quote_repair` event. This is better than loosening the check: the reader ends
+up with a quote they can paste into ctrl-F and find.
+
+**The decision I nearly got wrong.** My first repair rule accepted any span
+above 0.94 similarity. Then I wrote the test I should have written first:
+
+> `"There is no pleural effusion and no pneumothorax"` → `"There is pleural
+> effusion and no pneumothorax"`
+
+That drops a negation, inverts the clinical meaning, and scores **0.968**. A
+similarity threshold would have waved it through and called it a typo.
+
+So repair is not decided by similarity at all. Similarity only *locates* the
+candidate span; acceptance requires that the letters and digits of the quote and
+the span be identical in order. That is blind to every punctuation, spacing and
+hyphenation difference — which is all repair is for — and blind to nothing else.
+Similarity is still reported, because knowing a rejected quote scored 0.30 (a
+fabrication) rather than 0.80 (a stitched-together real one) is the difference
+between two very different bugs.
+
+The general lesson: when a safety check is being relaxed, the test that matters
+is not "does the false positive go away", it is "does the thing the check exists
+for still fail". I had the first test. I wrote the second one only because the
+threshold felt arbitrary while I was typing the constant.
+
+---
+
+## 2026-08-27 — The imaging agent that would not look at the image
+
+**What happened.** Tool selection on `cardiomegaly_assessment` was 50%, and the
+README had already conceded the point as "arguably a defensible reading of a
+two-part question". Asked *"Does X show cardiomegaly, and what does the report
+say?"*, the model read the report and answered from the text alone.
+
+**What I chose and why.** The gold set was right and the prompt was wrong, so I
+fixed the prompt rather than the question. There is a real distinction the
+system prompt had never drawn: what the report SAYS is a lookup, what the image
+SHOWS is an observation, and the report is a second reader's prior opinion
+rather than evidence about the pixels in front of you. That is now a rule.
+
+50% → **100%**, all eight cases, first run after the change.
+
+**What it cost, stated because it is not free.** Median latency on those cases
+went 17.4s → 47.1s and cost per query roughly doubled, because the agent now
+runs segmentation or the classifier where it previously ran one lookup. That is
+the correct trade for an imaging agent and it is still under a fifth of a cent
+per query, but "we fixed the metric" without "and here is the bill" is how
+benchmarks get gamed.
+
+**The thing I want to remember.** I had written the excuse into the README
+before I tried the fix. "Arguably defensible" was doing work that a two-sentence
+prompt rule did better. A limitation you have rationalised in prose is one you
+have stopped trying to fix.
+
+---
+
+## 2026-08-27 — Embeddings lost, which is the useful result
+
+**What happened.** Weekend 1 wrote down a hypothesis — BM25 "has no idea that
+'cardiomegaly' and 'enlarged heart' mean the same thing" — and it sat in the
+limitations list for three weekends as an assumption nobody had priced.
+
+**What I chose and why.** Twelve findings, each queried twice: once in
+radiologist vocabulary, once as a non-radiologist would type it. Same relevance
+judgements (the NLM's own MeSH labels) across both. Reporting one blended
+average would have hidden the entire effect, since a retriever that is superb on
+half the queries and useless on the other half averages out to "adequate".
+
+|  | clinical | lay | drop |
+|---|---|---|---|
+| bm25 | **0.911** | 0.266 | 70.8% |
+| embedding | 0.789 | **0.364** | 53.9% |
+| hybrid (RRF) | 0.870 | 0.323 | 62.9% |
+
+The hypothesis was right and the obvious remedy was wrong. BM25 does collapse on
+paraphrase — three findings go to exactly zero. But the dense retriever
+*loses* on clinical phrasing, which is the condition the agent actually operates
+in, since it builds its own queries out of clinical vocabulary. And its win on
+the lay set is a win at 0.364 nDCG, which is not a working retriever, it is a
+less broken one.
+
+So BM25 stays the default and the tool grew a `retriever` parameter instead of a
+replacement. The test asserting the default is deliberate: flipping it should
+have to change a test, because the default is now a measured decision rather
+than an accident of which one was written first.
+
+**The finding I was not looking for.** Both retrievers rank
+
+> "The heart is **not** enlarged. Lungs are clear."
+
+in the top three for `enlarged heart`. Neither model handles negation, and in a
+corpus where much of every report is a list of absent findings, that is a worse
+defect than the vocabulary gap. The aggregate metrics cannot see it: that report
+is labelled `normal`, so retrieving it costs score exactly as an unrelated
+report would. The numbers say both retrievers did worse; only reading the hits
+says they returned the opposite of what was asked for.
+
+That is the argument for `--show` existing at all. I built it to debug the
+harness and it found the thing the harness could not measure.
+
+---
+
+## 2026-08-27 — Building the image found three things the host suite could not
+
+**What happened.** The README had carried an honest admission since Weekend 5:
+the compose file validated, both risky Dockerfile steps were reasoned about, but
+the image had never been built because the Docker daemon was not running. I
+started the daemon and built it.
+
+It built, the container reached `healthy` in ten seconds, and `/_stcore/health`
+returned 200. Then I ran the test suite *inside* the image, which is the part
+that was actually worth doing.
+
+**Three defects, none of which the host could show me.**
+
+*The sentence encoder ignored its baked-in weights.* `embed.py` passed
+`cache_folder=CACHE_DIR/"sbert"`, which overrides `SENTENCE_TRANSFORMERS_HOME` —
+so the weights the Dockerfile downloaded into `/opt/sbert` were invisible and
+the container would re-fetch at runtime. It worked perfectly on a laptop, where
+both paths point at a machine that has the model.
+
+*And the fix for that was not enough.* With `--network none` the model then
+loaded from cache, but only after ~100 seconds of HEAD requests for *optional*
+config files (`adapter_config.json`, `video_preprocessor_config.json`, five
+retries each) before falling back. The pre-download step prevented the failure
+and not the hang. `HF_HUB_OFFLINE=1` in the image took the first embedding call
+from 100s+ to 3s. This is the worse bug of the two: a failure gets reported, an
+inexplicable one-time 100-second pause gets shrugged at.
+
+*Two tests were lying about their dependencies.*
+`test_deploy_requirements_exclude_torch` read `requirements-deploy.txt`, which
+was never COPYed into the image, so it failed with `FileNotFoundError` rather
+than a verdict. And `_case_selectbox` did `next(s for s in at.selectbox ...)`
+with no default, so with no corpus mounted the UI tests raised `StopIteration` —
+a crash that says nothing about the actual condition, which is "you have no
+data". Both now behave: the file is copied in, and the helper skips with a
+message naming `scripts/fetch_data.py`.
+
+**What I chose and why.** The image now runs the suite as part of how I verify
+it, not just `curl /health`. A health endpoint tells you the process started. It
+does not tell you that a model will load, that a test's fixture file exists, or
+that a cache lookup will take a hundred seconds.
+
+**The general shape of it.** All three defects are the same defect: the host
+environment is more forgiving than the target, and every place the code reached
+for something the host happens to have — a path, a file, a network — was a place
+it would fail or hang somewhere else. "Works on my machine" was not the failure
+mode; "the container is a machine I had never tried it on" was.
+
+---
+
+## 2026-08-27 — The judge should not be able to slow down the run
+
+**What happened.** The first full sweep published `judge_n = 0` and
+`judge_mean_score = NaN`. The system under test was Groq and the judge was
+Gemini — deliberately, since a model grading its own output grades it generously
+— and Gemini's free tier was spent. Every judge call failed and the summary went
+out with two NaN columns in it.
+
+Re-running today with quota available fixed the NaN and produced the opposite
+failure. Gemini rate-limited the judge, `with_rate_limit_retry` did its job, and
+cases went from ~20 seconds to **173 seconds**, nearly all of it sleeping. The
+agent had already produced a correct answer in twenty seconds; the sweep then
+sat waiting for permission to have an opinion about it.
+
+**What I chose and why.** Pulled the judge out into `evals/judge.py`, a separate
+resumable pass over saved answers. The workflow is now:
+
+```bash
+python -m evals.run --provider groq --no-judge        # answers, fast
+python -m evals.judge evals/results/groq_partial.jsonl --judge gemini --resume
+```
+
+This is the same argument `rescore.py` already makes and I had not noticed it
+applied here too. The answers are the expensive artefact and they do not change.
+Judging is a separate opinion about them, and it can be formed later, on another
+provider, or twice. Coupling the two means every judge problem is also a run
+problem.
+
+A spent quota now stops the judge pass cleanly and says how far it got, rather
+than burning the remaining forty cases against a wall that will not move until
+tomorrow. `--resume` picks it up when it resets. The cost of a quota wall is a
+judge column on some rows — reported as an explicit `judge_n` — instead of an
+hour, or a NaN.
+
+**The thing worth remembering.** I killed the stalled run mid-sweep and restarted
+it with `--no-judge --resume`; the 26 finished cases were reused and the rest
+completed at normal speed. That only worked because the incremental file existed,
+which was a decision made a week earlier for an unrelated reason (surviving a
+rate-limit death partway through a sweep). Resumability paid for itself twice, in
+a way I did not design for the second time.
+
+---
+
+## 2026-08-27 — I banned the fabricated quotation and the fabrication moved next door
+
+**What happened.** Weekend 4's headline finding was a fabricated citation: the
+agent had put words in quotation marks and attributed them to named authors,
+having read nothing. The fix was a system-prompt rule stating exactly what
+`search_literature` returns and forbidding attributed quotations, plus a gold
+case, `adv-fabricated-citation`, that asks for direct quotations from papers.
+
+Today that case failed again, and the failure is more interesting than the
+original. The model **obeyed the rule**. Its answer opens:
+
+> I'm unable to provide verbatim quotations because the literature-search tool
+> returns only titles, authors, journals, years and PubMed IDs — not the full
+> text of the articles.
+
+That is the rule, restated correctly, unprompted. Then it listed three papers
+with titles, journals, volumes, page ranges and PMIDs — `7541234`, `12456789`,
+`20876543` — having called no tool at all. Every one invented.
+
+The rule constrained a *phrasing*. It said "do not put words in quotation marks
+and attribute them to a paper", so the model did not do that. It fabricated the
+papers instead.
+
+**What I chose and why.** A fourth sentence in the prompt would have been the
+same mistake a third time. A PMID is the most mechanically checkable claim an
+answer can make — a bare number that either came out of `search_literature` or
+did not — so `check_answer` now extracts every PMID and verifies it against tool
+output, and an unsupported one fails groundedness exactly as an unsupported
+quote does. It is compared against the raw corpus rather than the folded one, so
+"754 1234" cannot match "7541234".
+
+I did also tighten the prompt, from "you may cite a title and its PMID" to "only
+if that exact title and PMID appear in a search_literature result in this
+conversation; a PMID you did not read from a tool result is a fabricated
+identifier even if the paper it names happens to exist." After the change the
+model stopped inventing and started offering to retrieve.
+
+**What I did not do.** The case still fails, and I left it failing. The agent now
+declines and *offers* to search rather than searching — safe, and less useful
+than calling the tool it has. The gold set expects `search_literature`, and that
+expectation is right: a question about published studies should be answered by
+looking. Editing the case until it passed would have converted a real
+over-caution regression into a green tick.
+
+Three cases earlier in this same session were gold-set bugs that I did fix, and
+the difference matters: those punished correct behaviour, this one records
+behaviour that genuinely got worse in one dimension while getting better in
+another. Trading fabrication for over-caution is a good trade and still a trade.
+
+**The general lesson, which I have now learned twice in one file.** A prompt rule
+is a constraint on one way of saying something. If the underlying capability —
+here, producing text that looks like a citation — is still available, the model
+will find another way to use it, and the second way will not be covered by the
+rule you wrote for the first. Anything that can be checked against tool output
+should be checked against tool output. `verify_grounding` had been enforcing
+that principle for quotes since Weekend 3; identifiers were sitting right next
+to them, equally checkable, unchecked.
+
+---
+
+## 2026-08-27 — The backoff ignored what the server was telling it
+
+**What happened.** A 43-case sweep lost nine cases to `429 Too Many Requests`
+from Groq. My first assumption was a spent daily quota, which is the case the
+harness already handles by excluding rather than failing. It was not. A probe
+against the API returned:
+
+```
+x-ratelimit-limit-tokens: 8000          <- per MINUTE
+x-ratelimit-remaining-tokens: 7923
+x-ratelimit-limit-requests: 1000        <- per day
+x-ratelimit-remaining-requests: 837
+```
+
+837 of 1,000 daily requests still available. The limit being hit was 8,000
+tokens **per minute**, and a single CTR case — segmentation output, classifier
+output, a full report — can spend most of a minute's budget on its own. A retry
+then sends the same large prompt into the same spent window.
+
+**The actual bug.** `_retry_delay_from_error` honoured the server's own hint,
+but only in Gemini's format:
+
+```python
+re.search(r"retryDelay['\"]?[:\s]+['\"]?(\d+(?:\.\d+)?)s", str(exc))
+```
+
+Groq states the same thing in prose — *"Please try again in 5.25s"* — and sends
+a `Retry-After` header. Neither matched. So every Groq 429 fell through to the
+blind `4, 8, 16, 32` ladder, exhausted five attempts inside one spent window,
+and reported the case as an error. The server had been saying exactly how long
+to wait, every time, and the code was not listening.
+
+Now all three forms are parsed, the hint is clamped to `[1s, 75s]` (a per-minute
+window needs at most a minute; a hint larger than that is a bug or a stall), and
+there are tests. Including one for `try again in 0s`, because `hint or delay`
+would have discarded a legitimate "retry now" as falsy — I wrote that expression
+first and only caught it while naming the test.
+
+**What I got wrong before that.** I read "429" and reached for the conclusion I
+already had a story for — free-tier daily quota, the thing that broke the Gemini
+run — instead of reading the headers, which took one request and answered it
+exactly. Two hours of a sweep grinding through 60-second retry ladders, when the
+first thing to do with a rate limit is ask the server what the limit *is*.
+
+**Not fixed, and deliberately.** The harness still does not read the rate-limit
+headers to pace itself proactively; `--delay` is manual. Reactive backoff that
+obeys the server is enough for a free-tier evaluation run, and a token-budget
+scheduler is a real piece of engineering that this project does not currently
+need. Written down so it is a decision rather than an omission.
+
+**Postscript, an hour later.** The fix above changed nothing, and the reason is
+worth more than the fix. `requests` renders an `HTTPError` as
+
+```
+429 Client Error: Too Many Requests for url: https://api.groq.com/...
+```
+
+and **discards the response body**, which is the only place Groq writes the
+hint. So the newly-added Groq pattern was being run against a string that could
+never contain a wait time. I had tested the regex against the message I *thought*
+the exception carried, taken green, and shipped a no-op. `_error_text()` now
+reads `exc.response.text` and the `Retry-After` header as well as `str(exc)`,
+and the test asserts the premise explicitly — `assert "5.25" not in str(exc)` —
+so the next reader can see why the function looks in three places.
+
+With the hint finally readable, the server turned out to be saying something
+different from what I assumed:
+
+```
+tokens per day (TPD): Limit 200000, Used 199146, Requested 3082.
+Please try again in 16m2.496s.
+```
+
+Not a per-minute burst. The **daily** budget, spent. Same status code, same
+message shape, same code path — and completely different meaning. Sleeping
+through it costs sixteen minutes and then fails anyway, once per remaining case.
+
+So the backoff now distinguishes them by the length of the hint: above
+`MAX_RETRY_WAIT` the server is describing a wall rather than a burst, and the
+call raises immediately so `evals.run` can recognise the quota error and exclude
+the case. The exclusion rule already existed. It was just being reached six
+minutes late, once per case, after five retries that could not possibly succeed.
+
+Three bugs, one after another, each hidden by the one in front of it: a hint that
+was never parsed, then parsed from a string that never contained it, then
+correctly parsed and misinterpreted. The through-line is that I kept guessing at
+what the server was saying instead of printing it. One `requests.post` and a
+loop over `r.headers` answered in ten seconds what the retry ladder had been
+failing to guess for two hours.
+
+---
+
+## 2026-08-27 — The strict path was the lenient one
+
+**What happened.** While reading the diff before committing, I noticed that
+`check_answer` (prose) verified PMIDs and `verify_grounding` (structured) did
+not. So the path with a Pydantic schema, four validators and a required-quote
+rule — the one that exists *because* it is stricter — was the one that would
+have accepted `citation="12456789"` for a paper nobody retrieved.
+
+`Evidence.citation` had never been checked against anything. It was validated
+for presence (`source="literature"` requires it) and never for truth.
+
+**What I chose and why.** `verify_grounding` now checks citations as well as
+quotes, through the same `extract_pmids` the prose path uses, and an unsupported
+one fails grounding exactly as an unsupported quote does.
+
+**Why it happened.** I added the PMID check where I found the bug — in the prose
+path, because that is where the eval had caught the fabrication — and stopped.
+The whole point of moving the definition into `radreport/grounding.py` earlier
+in the same session was that a rule enforced in two places drifts. I then added
+a new rule to one of the two places.
+
+Sharing the *primitives* is not the same as sharing the *policy*. Both paths now
+call `extract_pmids` and `check_quote`, which is what made the gap easy to close
+once seen — but nothing structural stops the next rule going into one caller and
+not the other. Worth knowing about the shape of this codebase rather than
+pretending the refactor solved it.
+
+---
+
+## 2026-08-27 — Cosine has no zero
+
+**What happened.** BM25 scores exactly 0 when no query term appears, so
+`search_reports` gets "no match" for free and returns an empty list with a note
+saying so. There is a test for it. The dense retriever inherited the code path
+and not the property: cosine similarity always has k nearest neighbours, so a
+question about bicycles would come back as "3 report(s) matched" with three
+radiology reports attached.
+
+**What I chose and why.** Measured the two populations rather than guessing a
+constant:
+
+```
+relevant   'pleural effusion' 0.683   'enlarged heart' 0.779   'broken rib' 0.601
+nonsense   'zebra xylophone'  0.205   'quarterly revenue forecast' 0.117
+```
+
+They separate cleanly, so `EMBEDDING_FLOOR = 0.35` sits in the gap with room on
+both sides, and the measurement is in the comment so the next person can
+reproduce it before changing the number. A threshold with its evidence attached
+is a decision; the same number without it is a magic constant that nobody will
+dare touch.
+
+**The general shape.** Adding a second implementation behind an existing
+interface means inheriting the interface's promises, and some of those promises
+were being kept by an accident of the first implementation rather than by the
+code. "Returns nothing when nothing matches" was a property of BM25's scoring,
+not of `search_reports`, and it took writing a second retriever to notice the
+difference.
+
+---
+
+## 2026-08-28 — The eighteen labels the grounding check could not see
+
+**What happened.** The final clean sweep left two unsupported quotes. One was a
+model quoting its own caveat prose back in quotation marks — a known limit of
+extracting citations from free text, and not fixable without semantics. The
+other was:
+
+> "Enlarged Cardiomediastinum"
+
+which the agent had copied straight out of the `classify_xray` result it had just
+received. The grounding check called it a possible fabrication.
+
+`collect_strings` walked dict **values** and skipped **keys**:
+
+```python
+return [s for v in node.values() for s in collect_strings(v)]
+```
+
+`classify_xray` returns `{"findings": {"Enlarged Cardiomediastinum": 0.43, ...}}`,
+so every pathology label this system can name lives in a key. All eighteen were
+invisible to the corpus. Any answer quoting a label — the most obviously
+grounded thing an imaging agent can say — was scored as invented.
+
+This function already carried a comment explaining why it walks the structure
+rather than calling `str(node)`: repr turns a real newline into backslash-n and
+a quote spanning a line break then looks fabricated. The same mistake, one level
+up, in the same function, under a comment about that exact class of mistake.
+
+Fixed; groundedness went 92.0% → **96.0%** on the same records, and the verbatim
+rate to 61/62. Two tests: one that a quoted label is grounded, one that widening
+the corpus to keys has not widened it to everything.
+
+**Why it took this long to surface.** The `classification` category was added to
+the gold set after the original 38-case run, so the first sweep that could
+possibly have exposed this was the one that did. Coverage found it, not review —
+I had read that function three times yesterday while extracting it into
+`grounding.py` and did not see it.
+
+---
+
+## 2026-08-28 — Twenty requests a day is not bad luck, it is arithmetic
+
+**What happened.** With all 43 cases finally swept clean, the judge pass got two
+cases in and stopped:
+
+```
+generate_content_free_tier_requests, limit: 20, model: gemini-3.6-flash
+quotaId: GenerateRequestsPerDayPerProjectPerModel
+```
+
+Twenty requests per **day**. I had spent a fortnight describing the Gemini
+evaluation as "the free tier ran out", as though a better-timed run would fix it.
+A 43-case judge pass needs 43 requests. A 43-case Gemini-as-SUT sweep needs two
+to four per case, so upwards of a hundred — five days of budget for one result,
+during which the code changes underneath it. It was never going to complete. That
+is arithmetic, and I could have done it at any point in the last two weeks by
+reading the error instead of retrying past it.
+
+**What I chose and why.** Two changes, neither of which is "run it again
+tomorrow".
+
+`--limit N` spends a scarce budget deliberately. Judging the first twenty rows
+would have been worthless: the gold set is ordered lookups, measurements,
+classification, adversarial-last, so file order buys an opinion about the easy
+block and a judge score of 2.0 that means nothing. `--limit` takes the
+**stratified, adversarial-weighted, seeded** sample — reusing `spot_check`'s
+sampler on purpose, so the cases a human reviews and the cases the judge grades
+overlap and can be compared. Two independent opinions about different cases
+cannot disagree, which makes them useless as a check on each other.
+
+And `--resume` now reads the file the command *writes*. It had been reading the
+input, which is produced by `--no-judge` and therefore never carries scores — so
+each pass re-judged everything and overwrote the previous pass's verdicts with
+its own empty ones. On a twenty-a-day budget, a resume that discards yesterday's
+work means coverage can never exceed one day. A resumable command that throws
+away what it is resuming from is just a slower non-resumable one. Test added.
+
+**What gets reported.** `judge_n` alongside every judged metric, and 0 of 43 for
+this run, stated plainly. The four deterministic metrics cover all 43 cases and
+need no judge at all. That was the design rule on day one — *every metric that
+can be computed deterministically is computed deterministically, and the LLM
+judge is used only for the one thing that genuinely needs judgement* — and this
+is the day it paid for itself. A harness whose headline numbers all came from a
+model would have had nothing to report.

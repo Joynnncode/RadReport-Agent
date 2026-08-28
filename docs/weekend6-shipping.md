@@ -276,8 +276,8 @@ unsure. Both mark a section to re-read.
 
 ## Definition of done
 
-- [ ] Public repo, no secrets, no data committed
-- [ ] Live Streamlit app, verified in a private window
+- [x] Public repo, no secrets, no data committed  (verified 2026-08-25)
+- [x] Live Streamlit app  (verified; still check it once in a private window)
 - [ ] 60-second video, under 10 MB, trace panel featured
 - [ ] 900-word write-up posted, linking repo + app + video
 - [ ] Three STAR stories written out
