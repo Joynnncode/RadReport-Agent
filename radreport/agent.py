@@ -26,6 +26,7 @@ from typing import Any
 
 from radreport.config import DISCLAIMER, IMAGE_DIR, TRACE_DIR
 from radreport.llm import LLMProvider, LLMResponse, ToolCall, get_provider
+from radreport.grounding import repair_answer
 from radreport.schema import AgentAnswer, json_schema_for_prompt, verify_grounding
 from radreport.tools import REGISTRY, ToolError
 
@@ -204,19 +205,39 @@ in this conversation: a named model output with its number, or a quoted line \
 from a retrieved report. You have no independent knowledge of these patients. \
 If no tool supports a claim, do not make it.
 
-QUOTING. When you cite a report, quote it verbatim, including any 'XXXX' tokens \
-(these mark where identifiers were removed during de-identification). Never \
-paraphrase a quotation into something cleaner, and never insert emphasis or \
-change punctuation inside quotation marks.
+QUOTING. When you cite a report, COPY THE EXACT CHARACTERS of the span from the \
+tool output, including any 'XXXX' tokens (these mark where identifiers were \
+removed during de-identification) and including the report's own spelling, \
+even where it looks wrong to you: if it says "followup", write "followup", not \
+"follow-up". Do not add a full stop the source does not have. Do not insert \
+markdown emphasis inside quotation marks. Do not join two sentences that are \
+not adjacent in the source into one quotation, with an ellipsis or otherwise -- \
+use two separate quotations. Everything inside quotation marks is checked \
+character by character against tool output.
+
+IMAGING QUESTIONS. When you are asked whether an image SHOWS something -- signs \
+of a finding, whether the heart looks enlarged, what is visible on the film -- \
+the radiologist's report is not sufficient on its own. It is a second reader's \
+prior opinion, not an observation of the image in front of you, and an answer \
+built only from it has not looked at the X-ray at all. Run classify_xray, or \
+segment_lungs then compute_ctr, and attribute each piece of evidence to where \
+it came from. If the image evidence and the report disagree, say so plainly \
+rather than quietly siding with one. A question that only asks what the report \
+SAYS is a lookup and needs no imaging tool.
 
 LITERATURE. search_literature returns titles, journals, years, authors and \
 PMIDs. It does NOT return abstracts or full text. You have therefore not read \
-these papers. You may cite a title and its PMID; you must NEVER put words in \
-quotation marks and attribute them to a paper, never write "X et al. reported \
-that ...", and never invent citation markers. If asked why something is true \
-and you can only supply titles, say that: give the citations and state plainly \
-that you are pointing to relevant literature rather than quoting findings from \
-it.
+these papers. You may cite a title and its PMID ONLY if that exact title and \
+PMID appear in a search_literature result in this conversation. If you have not \
+called search_literature, you have no citations: call it, or say you have none. \
+Never write a title, journal, year, volume, page range or PMID from memory -- \
+a PMID you did not read from a tool result is a fabricated identifier even if \
+the paper it names happens to exist. You must NEVER put words in quotation \
+marks and attribute them to a paper, never write "X et al. reported that ...", \
+and never invent citation markers. If asked why something is true and you can \
+only supply titles, say that: give the citations you actually retrieved and \
+state plainly that you are pointing to relevant literature rather than quoting \
+findings from it.
 
 SPECIFIC CASES. When the user names a case id, use get_report_by_image. If it \
 returns found=false, say plainly that the case is not in the corpus. Never \
@@ -395,6 +416,10 @@ def run(user_message: str, *,
     # "Memory" is just this list. The API is stateless; every call sends it all.
     messages: list[dict] = [{"role": "user", "content": user_message}]
 
+    # Kept alongside the trace so the answer can be checked against tool output
+    # before it is returned, rather than only afterwards by the eval harness.
+    tool_results: list[dict] = []
+
     for iteration in range(max_iterations):
         response: LLMResponse = provider.chat(messages, TOOLS, SYSTEM_PROMPT)
 
@@ -408,9 +433,16 @@ def run(user_message: str, *,
 
         # --- exit condition: the model answered instead of calling a tool ---
         if not response.wants_tools:
-            tracer.write("final", iteration, answer=response.text,
-                         total_iterations=iteration + 1, converged=True)
-            return _result(response.text, tracer, started, converged=True)
+            answer, repairs = repair_answer(response.text, tool_results)
+            for repair in repairs:
+                # Traced, never silent. Rewriting a model's output is a real
+                # intervention and it has to be auditable: the trace shows both
+                # strings so a reader can see the substitution was cosmetic.
+                tracer.write("quote_repair", iteration, **repair)
+            tracer.write("final", iteration, answer=answer,
+                         total_iterations=iteration + 1, converged=True,
+                         quotes_repaired=len(repairs))
+            return _result(answer, tracer, started, converged=True)
 
         # --- append the model's REQUEST, then run the tools ---
         messages.append({
@@ -423,6 +455,7 @@ def run(user_message: str, *,
             t0 = time.perf_counter()
             result = dispatch(call.name, call.arguments)
             elapsed = time.perf_counter() - t0
+            tool_results.append(result)
 
             tracer.write("tool_call", iteration,
                          tool=call.name,
