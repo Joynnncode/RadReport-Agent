@@ -40,7 +40,8 @@ def main() -> int:
     # raw records published 75.0% while the README, computed after a gold-set
     # fix, said 97.2%. The committed evidence and the claimed numbers must come
     # from the same computation or the evidence is worse than useless.
-    records = rescore(records, {c["id"]: c for c in load_gold_set()})
+    records = rescore(records, {c["id"]: c for c in load_gold_set()},
+                      ns.provider or None)
     summary = summarise(records)
 
     by_cat = defaultdict(lambda: {"n": 0, "tool_pass": 0})
@@ -61,6 +62,14 @@ def main() -> int:
         "deterministic_pass": r["deterministic"]["pass"],
         "grounded": (r["groundedness"]["pass"]
                      if r["groundedness"]["applicable"] else None),
+        "quotes": {
+            "found": r["groundedness"].get("quotes_found", 0),
+            "verbatim": r["groundedness"].get("verbatim", 0),
+            "repaired": len(r["groundedness"].get("repaired", [])),
+            "unsupported": len(r["groundedness"].get("unsupported", [])),
+            "pmids": r["groundedness"].get("pmids_found", 0),
+            "pmids_unsupported": len(r["groundedness"].get("unsupported_pmids", [])),
+        },
         # deliberately no "answer" field: that is where the report text lives
     } for r in records]
 

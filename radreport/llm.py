@@ -179,16 +179,66 @@ LLM_TIMEOUT_S = 60
 # is retried here rather than surfacing to the harness as a broken run.
 RATE_LIMIT_RETRIES = 5
 RATE_LIMIT_BASE_DELAY = 4.0     # seconds; doubles each attempt
+# Longest wait worth sleeping through. Above this, the server is describing a
+# daily quota rather than a momentary burst, and the right move is to stop.
+MAX_RETRY_WAIT = 75.0
+
+
+# Both providers say how long to wait; they say it differently. Gemini puts a
+# `retryDelay: "31s"` field in the error body, Groq writes it in prose --
+# "Please try again in 5.25s" -- and both may send a Retry-After header.
+#
+# Only the Gemini form was parsed, so every Groq 429 fell through to the blind
+# 4/8/16/32s ladder. On Groq's 8,000-tokens-per-MINUTE free tier a single CTR
+# case can spend the whole minute's budget, and a retry sends the same large
+# prompt again: the ladder exhausted its five attempts inside the same spent
+# window and the case was recorded as an error. Nine cases of a 43-case sweep
+# died that way while the server had been stating the exact wait each time.
+_RETRY_HINTS = (
+    r"retryDelay['\"]?[:\s]+['\"]?(\d+(?:\.\d+)?)s",       # Gemini
+    r"try again in (\d+(?:\.\d+)?)\s*s",                    # Groq
+    r"retry[- ]after['\"]?[:\s]+['\"]?(\d+(?:\.\d+)?)",    # HTTP header, either
+)
+
+
+def _error_text(exc: Exception) -> str:
+    """Everything the server said, not just what str(exc) chose to show.
+
+    requests' HTTPError renders as "429 Client Error: Too Many Requests for url:
+    ..." and drops the response body entirely -- and the body is where Groq puts
+    the wait hint. Parsing str(exc) alone therefore found nothing and fell back
+    to the blind ladder, which is the bug this function was just fixed for and
+    still had, one layer down. The Retry-After header is worth reading for the
+    same reason.
+    """
+    parts = [str(exc)]
+    response = getattr(exc, "response", None)
+    if response is not None:
+        header = (getattr(response, "headers", {}) or {}).get("Retry-After")
+        if header:
+            parts.append(f"Retry-After: {header}")
+        try:
+            parts.append(response.text or "")
+        except Exception:      # a consumed or streaming body is not worth raising over
+            pass
+    return " ".join(parts)
 
 
 def _retry_delay_from_error(exc: Exception) -> float | None:
-    """Honour the server's own retryDelay hint when it gives one."""
-    match = re.search(r"retryDelay['\"]?[:\s]+['\"]?(\d+(?:\.\d+)?)s", str(exc))
-    return float(match.group(1)) if match else None
+    """Honour the server's own wait hint when it gives one."""
+    text = _error_text(exc)
+    for pattern in _RETRY_HINTS:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            # A hint of 0 is a real answer ("retry now"), so test for None
+            # rather than truthiness; `or delay` at the call site would
+            # otherwise silently replace it with the blind ladder.
+            return float(match.group(1))
+    return None
 
 
 def _is_rate_limit(exc: Exception) -> bool:
-    text = str(exc)
+    text = _error_text(exc)
     return "429" in text or "RESOURCE_EXHAUSTED" in text or "rate limit" in text.lower()
 
 
@@ -201,7 +251,23 @@ def with_rate_limit_retry(fn, label: str = ""):
         except Exception as exc:
             if not _is_rate_limit(exc) or attempt == RATE_LIMIT_RETRIES - 1:
                 raise
-            wait = _retry_delay_from_error(exc) or delay
+            hinted = _retry_delay_from_error(exc)
+            # A hint LONGER than the burst window is not a burst. Groq answers a
+            # spent per-minute budget with "try again in 5.25s" and a spent
+            # per-DAY budget with "try again in 16m2.496s" -- same status code,
+            # same message shape, completely different situation. Sleeping
+            # through the second one costs 16 minutes and then still fails.
+            #
+            # So a long hint is treated as what it is: a wall. Raise immediately,
+            # let evals.run recognise the quota error, and EXCLUDE the case
+            # rather than scoring it as the agent getting something wrong. That
+            # rule already existed; it was just being reached six minutes late,
+            # once per case, after five pointless retries.
+            if hinted is not None and hinted > MAX_RETRY_WAIT:
+                print(f"[{label} quota wall: server asks for {hinted:.0f}s; "
+                      f"not retrying]", file=sys.stderr, flush=True)
+                raise
+            wait = delay if hinted is None else max(hinted, 1.0)
             print(f"[{label} rate-limited, waiting {wait:.0f}s "
                   f"({attempt + 1}/{RATE_LIMIT_RETRIES})]", file=sys.stderr, flush=True)
             time.sleep(wait)

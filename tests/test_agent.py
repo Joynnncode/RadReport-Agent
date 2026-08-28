@@ -362,3 +362,153 @@ def test_trace_records_tool_results_for_offline_scoring(tmp_path):
         assert "hits" in result                    # corpus present
     else:
         assert result["error"]                     # corpus absent: still recorded
+
+
+# --- rate-limit backoff -----------------------------------------------------
+#
+# Untested until a 43-case sweep lost nine cases to it. The retry ladder looked
+# fine in isolation; what it got wrong was ignoring what the server had said.
+
+def test_retry_delay_is_read_from_each_providers_own_format():
+    from radreport.llm import _retry_delay_from_error as delay
+
+    # Gemini: a structured field in the error body.
+    assert delay(Exception('RESOURCE_EXHAUSTED ... retryDelay: "31s"')) == 31.0
+    # Groq: the same information in prose. This one was NOT parsed, so every
+    # Groq 429 fell through to a blind 4/8/16/32s ladder.
+    assert delay(Exception("429 Rate limit reached. Limit 8000, Used 7900. "
+                           "Please try again in 5.25s.")) == 5.25
+    # Either provider, via the HTTP header.
+    assert delay(Exception("429 Too Many Requests; Retry-After: 12")) == 12.0
+
+
+def test_a_non_rate_limit_error_carries_no_delay_hint():
+    from radreport.llm import _retry_delay_from_error as delay
+    assert delay(Exception("500 Internal Server Error")) is None
+
+
+def test_a_zero_second_hint_is_honoured_rather_than_treated_as_absent():
+    """`hint or default` would silently discard a legitimate 'retry now'."""
+    from radreport.llm import _retry_delay_from_error as delay
+    assert delay(Exception("Please try again in 0s.")) == 0.0
+
+
+def test_rate_limit_retry_eventually_gives_up_and_raises():
+    """A spent daily quota must reach the caller as an error, not loop forever:
+    evals.run classifies it and EXCLUDES the case rather than scoring it 0."""
+    from radreport.llm import with_rate_limit_retry
+    calls = []
+
+    def always_limited():
+        calls.append(1)
+        raise RuntimeError("429 Too Many Requests; Please try again in 0s.")
+
+    with pytest.raises(RuntimeError, match="429"):
+        with_rate_limit_retry(always_limited, label="test")
+    assert len(calls) > 1, "must actually retry before giving up"
+
+
+def test_rate_limit_retry_passes_through_other_errors_immediately():
+    from radreport.llm import with_rate_limit_retry
+    calls = []
+
+    def broken():
+        calls.append(1)
+        raise ValueError("malformed tool call")
+
+    with pytest.raises(ValueError):
+        with_rate_limit_retry(broken, label="test")
+    assert calls == [1], "a non-429 must not be retried"
+
+
+def test_the_hint_is_read_from_the_response_body_not_just_the_message():
+    """The bug behind the bug.
+
+    requests' HTTPError renders as "429 Client Error: Too Many Requests for url:
+    ..." and drops the response body -- which is exactly where Groq writes the
+    wait hint. Parsing str(exc) found nothing, so the first fix to the backoff
+    changed no behaviour at all and the ladder kept guessing.
+    """
+    import requests
+    from radreport.llm import _is_rate_limit, _retry_delay_from_error
+
+    class Body:
+        headers: dict = {}
+        text = ('{"error":{"message":"Rate limit reached for model. Limit 8000, '
+                'Used 7900. Please try again in 5.25s."}}')
+
+    exc = requests.exceptions.HTTPError("429 Client Error: Too Many Requests for url: x")
+    exc.response = Body()
+
+    assert "5.25" not in str(exc), "premise: the message alone does not carry it"
+    assert _retry_delay_from_error(exc) == 5.25
+    assert _is_rate_limit(exc) is True
+
+
+def test_a_response_whose_body_cannot_be_read_does_not_crash_the_backoff():
+    """Retry logic must never be the thing that raises."""
+    from radreport.llm import _retry_delay_from_error
+
+    class Hostile:
+        headers = {"Retry-After": "7"}
+
+        @property
+        def text(self):
+            raise RuntimeError("body already consumed")
+
+    exc = RuntimeError("429 Too Many Requests")
+    exc.response = Hostile()
+    assert _retry_delay_from_error(exc) == 7.0
+
+
+def test_a_daily_quota_wall_is_not_slept_through():
+    """Groq answers a spent per-minute budget with "try again in 5.25s" and a
+    spent per-DAY budget with "try again in 16m2.496s" -- same status code, same
+    message shape. Sleeping through the second costs sixteen minutes and then
+    fails anyway, once per case, for the rest of the sweep.
+
+    A hint longer than the burst window is a wall: raise at once so evals.run
+    can recognise the quota error and EXCLUDE the case.
+    """
+    import time
+    from radreport.llm import MAX_RETRY_WAIT, with_rate_limit_retry
+
+    class DailyWall:
+        headers = {"Retry-After": str(int(MAX_RETRY_WAIT * 10))}
+        text = ""
+
+    attempts = []
+
+    def blocked():
+        attempts.append(1)
+        exc = RuntimeError("429 Too Many Requests")
+        exc.response = DailyWall()
+        raise exc
+
+    started = time.perf_counter()
+    with pytest.raises(RuntimeError, match="429"):
+        with_rate_limit_retry(blocked, label="test")
+    assert attempts == [1], "a wall must not be retried"
+    assert time.perf_counter() - started < 1.0, "and must not be slept through"
+
+
+def test_a_short_hint_is_still_retried():
+    """The burst case must keep working: this is the one worth waiting out."""
+    from radreport.llm import with_rate_limit_retry
+
+    class Burst:
+        headers: dict = {}
+        text = '{"error":{"message":"Rate limit reached. Please try again in 0s."}}'
+
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            exc = RuntimeError("429 Too Many Requests")
+            exc.response = Burst()
+            raise exc
+        return "ok"
+
+    assert with_rate_limit_retry(flaky, label="test") == "ok"
+    assert len(calls) == 3

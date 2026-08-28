@@ -69,6 +69,42 @@ def tool_results_from_trace(trace_path: str) -> list[dict]:
     return out
 
 
+def locate_trace(question: str, provider: str | None = None) -> str:
+    """Find the trace for a question by reading the traces back.
+
+    Records written before `trace_path` was added carry no pointer to their
+    trace, and groundedness is the one metric that cannot be recomputed without
+    the tool output. So the 52.9% those runs reported survived every later fix to
+    the metric -- rescore silently kept the original verdict, and the README
+    quoted a number produced by a definition that no longer existed anywhere in
+    the codebase.
+
+    The trace's own `start` event records the question and the provider, which is
+    enough to match on. Returns "" when the match is not unique, because scoring
+    against the wrong run is worse than not scoring.
+
+    This is a RECOVERY path for records written before `trace_path` existed, and
+    it gets less useful over time by design: every re-run of a question adds
+    another trace with the same text, so the match stops being unique and this
+    returns "". That is the correct failure. Records written by run.py now carry
+    their trace_path directly and never come through here.
+    """
+    from radreport.config import TRACE_DIR
+    matches = []
+    for path in sorted(Path(TRACE_DIR).glob("*.jsonl")):
+        try:
+            with path.open() as fh:
+                head = json.loads(fh.readline() or "{}")
+        except (json.JSONDecodeError, OSError):
+            continue
+        if head.get("event") != "start" or head.get("question") != question:
+            continue
+        if provider and head.get("provider") != provider:
+            continue
+        matches.append(str(path))
+    return matches[0] if len(matches) == 1 else ""
+
+
 def judge(case: dict, answer: str, judge_provider) -> dict:
     """LLM-as-judge for the one thing that needs judgement."""
     try:
@@ -150,7 +186,10 @@ def summarise(records: list[dict]) -> dict:
     if not n:
         return {"n_cases": 0, "excluded": len(excluded), "converged": float("nan"),
                 "tool_selection_accuracy": float("nan"), "groundedness": float("nan"),
-                "groundedness_n": 0, "deterministic_pass": float("nan"),
+                "groundedness_n": 0, "quotes_total": 0, "quotes_verbatim": 0,
+                "quotes_repaired": 0, "quotes_unsupported": 0,
+                "pmids_total": 0, "pmids_unsupported": 0,
+                "verbatim_rate": float("nan"), "deterministic_pass": float("nan"),
                 "judge_mean_score": float("nan"), "judge_safety_rate": float("nan"),
                 "judge_n": 0, "total_usd": 0, "usd_per_query": 0,
                 "median_latency_s": 0, "p90_latency_s": 0, "mean_llm_calls": 0,
@@ -162,7 +201,18 @@ def summarise(records: list[dict]) -> dict:
             return float("nan")
         return sum(1 for r in applicable if predicate(r)) / len(applicable)
 
+    # Two denominators, both reported, because conflating them is what put a
+    # case-level 52.9% and a quote-level 41/51 in the README as if they were the
+    # same measurement. They are not: one asks "how many ANSWERS contain a
+    # possible fabrication", the other "how many QUOTES were copied exactly".
     grounded = [r for r in records if r["groundedness"]["applicable"]]
+    quotes_total = sum(r["groundedness"].get("quotes_found", 0) for r in records)
+    quotes_verbatim = sum(r["groundedness"].get("verbatim", 0) for r in records)
+    quotes_repaired = sum(len(r["groundedness"].get("repaired", [])) for r in records)
+    quotes_unsupported = sum(len(r["groundedness"].get("unsupported", [])) for r in records)
+    pmids_total = sum(r["groundedness"].get("pmids_found", 0) for r in records)
+    pmids_unsupported = sum(len(r["groundedness"].get("unsupported_pmids", []))
+                            for r in records)
     judged = [r for r in records if r["judge"].get("score") is not None]
     latencies = sorted(r["cost"]["wall_time_s"] for r in records)
 
@@ -173,6 +223,14 @@ def summarise(records: list[dict]) -> dict:
         "groundedness": (sum(1 for r in grounded if r["groundedness"]["pass"]) / len(grounded)
                          if grounded else float("nan")),
         "groundedness_n": len(grounded),
+        "quotes_total": quotes_total,
+        "quotes_verbatim": quotes_verbatim,
+        "quotes_repaired": quotes_repaired,
+        "quotes_unsupported": quotes_unsupported,
+        "pmids_total": pmids_total,
+        "pmids_unsupported": pmids_unsupported,
+        "verbatim_rate": (quotes_verbatim / quotes_total
+                          if quotes_total else float("nan")),
         "deterministic_pass": rate(lambda r: r["deterministic"]["pass"]),
         "judge_mean_score": (statistics.mean(r["judge"]["score"] for r in judged)
                              if judged else float("nan")),
@@ -201,7 +259,16 @@ def print_summary(label: str, s: dict) -> None:
         print(f"  !! only {s['n_cases']} case(s) scored; too few to report as a result")
     print(f"  converged                {pct(s['converged'])}")
     print(f"  tool selection accuracy  {pct(s['tool_selection_accuracy'])}")
-    print(f"  groundedness             {pct(s['groundedness'])}   (n={s['groundedness_n']} with quotes)")
+    print(f"  groundedness             {pct(s['groundedness'])}   "
+          f"({s['groundedness_n']} answers contained quotes; "
+          f"{s.get('quotes_unsupported', 0)} unsupported quote(s))")
+    print(f"    verbatim quote rate    {pct(s.get('verbatim_rate', float('nan')))}   "
+          f"({s.get('quotes_verbatim', 0)} exact + {s.get('quotes_repaired', 0)} repaired "
+          f"of {s.get('quotes_total', 0)})")
+    if s.get("pmids_total"):
+        print(f"    cited PMIDs            {s['pmids_total'] - s['pmids_unsupported']}"
+              f"/{s['pmids_total']} appear in tool output"
+              f"{'   <-- FABRICATED IDENTIFIER' if s['pmids_unsupported'] else ''}")
     print(f"  deterministic checks     {pct(s['deterministic_pass'])}")
     print(f"  judge safety rate        {pct(s['judge_safety_rate'])}   (n={s['judge_n']})")
     print(f"  judge mean score         {s['judge_mean_score']:.2f} / 2" if s['judge_n'] else "  judge mean score      n/a")

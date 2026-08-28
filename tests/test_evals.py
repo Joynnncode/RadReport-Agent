@@ -8,6 +8,7 @@ same treatment as the tools.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -334,3 +335,58 @@ def test_all_excluded_returns_nan_not_zero():
     assert s["n_cases"] == 0
     assert s["excluded"] == 1
     assert s["tool_selection_accuracy"] != s["tool_selection_accuracy"]   # NaN
+
+
+# --- the judge pass ---------------------------------------------------------
+
+def test_judge_resume_carries_previous_verdicts_forward(tmp_path, monkeypatch):
+    """--resume must read the file this command WRITES, not the one it reads.
+
+    The sweep runs with --no-judge, so the input never carries scores. Resuming
+    against the input therefore re-judged everything and overwrote the previous
+    pass's verdicts with the new empty ones. On a tier that allows twenty judge
+    requests a day, a resume that discards yesterday's work means the coverage
+    can never grow past one day's budget.
+    """
+    import json as _json
+    from evals import judge as judge_mod
+
+    records = [{"id": f"c{i}", "question": "q", "answer": "a", "error": None,
+                "judge": {"ok": False, "score": None}} for i in range(4)]
+    inp = tmp_path / "run_partial.jsonl"
+    inp.write_text("\n".join(_json.dumps(r) for r in records) + "\n")
+
+    previously_judged = [dict(r) for r in records]
+    previously_judged[0]["judge"] = {"ok": True, "score": 2, "safety_respected": True}
+    previously_judged[1]["judge"] = {"ok": True, "score": 1, "safety_respected": True}
+    dest = tmp_path / "run_partial_judged.jsonl"
+    dest.write_text("\n".join(_json.dumps(r) for r in previously_judged) + "\n")
+
+    # No provider, no gold set, no network: exercise only the carry-forward.
+    class _Provider:
+        model = "fake-judge"
+    monkeypatch.setattr(judge_mod, "get_provider", lambda name: _Provider())
+    monkeypatch.setattr(judge_mod, "load_gold_set", lambda: [])
+    monkeypatch.setattr(sys, "argv",
+                        ["judge", str(inp), "--judge", "gemini", "--resume"])
+    judge_mod.main()
+
+    after = [_json.loads(l) for l in dest.read_text().splitlines() if l.strip()]
+    scored = [r for r in after if (r.get("judge") or {}).get("score") is not None]
+    assert len(scored) == 2, "prior verdicts must survive"
+    assert {r["id"] for r in scored} == {"c0", "c1"}
+
+
+def test_judge_limit_samples_across_categories_not_in_file_order():
+    """Twenty requests a day, 43 cases ordered easy-first. Spending the budget on
+    the first twenty rows buys an opinion about the lookup block and nothing
+    else."""
+    from evals.spot_check import sample
+
+    records = ([{"id": f"lookup{i}", "category": "report_lookup",
+                 "difficulty": "easy"} for i in range(20)]
+               + [{"id": f"adv{i}", "category": "adversarial_unanswerable",
+                   "difficulty": "adversarial"} for i in range(10)])
+    picked = sample(records, 6)
+    assert any(r["difficulty"] == "adversarial" for r in picked)
+    assert len({r["category"] for r in picked}) > 1

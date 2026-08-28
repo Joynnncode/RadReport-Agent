@@ -30,7 +30,8 @@ from evals.metrics import (                              # noqa: E402
 from evals.run import load_gold_set, print_breakdown, print_failures, print_summary, summarise  # noqa: E402
 
 
-def rescore(records: list[dict], cases_by_id: dict[str, dict]) -> list[dict]:
+def rescore(records: list[dict], cases_by_id: dict[str, dict],
+            provider: str | None = None) -> list[dict]:
     out = []
     for rec in records:
         case = cases_by_id.get(rec["id"])
@@ -46,14 +47,20 @@ def rescore(records: list[dict], cases_by_id: dict[str, dict]) -> list[dict]:
         updated["tool_selection"] = score_tool_selection(
             case, rec["tool_selection"]["called"])
         updated["deterministic"] = score_deterministic_checks(case, rec["answer"])
-        # Groundedness needs the tool results, which live in the trace. Re-read
-        # them if the trace still exists; otherwise keep the original verdict
-        # rather than silently scoring it as a pass.
+        # Groundedness needs the tool results, which live in the trace.
+        from evals.run import locate_trace, tool_results_from_trace
         trace = rec.get("trace_path", "")
+        if not (trace and Path(trace).is_file()):
+            # Older records predate trace_path. Recover the pointer by matching
+            # the question against the traces on disk rather than leaving the
+            # one metric that needs it frozen at whatever the run computed.
+            trace = locate_trace(rec["question"], provider)
         if trace and Path(trace).is_file():
-            from evals.run import tool_results_from_trace
+            updated["trace_path"] = trace
             updated["groundedness"] = score_groundedness(
                 rec["answer"], tool_results_from_trace(trace))
+        else:
+            print(f"  ! {rec['id']}: no trace found; groundedness not rescored")
         out.append(updated)
     return out
 
@@ -62,6 +69,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("results", help="a *_partial.jsonl or a run's .json file")
     ap.add_argument("--label", default="")
+    ap.add_argument("--provider", default=None,
+                    help="disambiguate traces when both providers ran the same question")
     ns = ap.parse_args()
 
     path = Path(ns.results)
@@ -72,7 +81,7 @@ def main() -> int:
 
     cases_by_id = {c["id"]: c for c in load_gold_set()}
     before = summarise(records)
-    rescored = rescore(records, cases_by_id)
+    rescored = rescore(records, cases_by_id, ns.provider)
     after = summarise(rescored)
 
     print_summary(ns.label or f"{path.name} (rescored)", after)
@@ -81,7 +90,7 @@ def main() -> int:
 
     print(f"\n  {'metric':<26} {'before':>9} {'after':>9}")
     print(f"  {'-' * 26} {'-' * 9} {'-' * 9}")
-    for key in ("tool_selection_accuracy", "deterministic_pass"):
+    for key in ("tool_selection_accuracy", "groundedness", "deterministic_pass"):
         b, a = before[key], after[key]
         fmt = lambda v: "n/a" if v != v else f"{v * 100:.1f}%"
         print(f"  {key:<26} {fmt(b):>9} {fmt(a):>9}")
