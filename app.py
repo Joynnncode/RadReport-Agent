@@ -127,8 +127,8 @@ with st.sidebar:
     if not usable:
         st.error(
             "No provider key is configured, so the agent cannot run. Set "
-            "`GROQ_API_KEY` in `.env` locally, or in **Manage app → Settings → "
-            "Secrets** on Streamlit Cloud.",
+            "`GROQ_API_KEY` in `.env` locally, in **Manage app → Settings → "
+            "Secrets** on Streamlit Cloud, or as a Container App secret on Azure.",
             icon="🔑",
         )
 
@@ -147,7 +147,8 @@ with st.sidebar:
         get_provider(provider_name)
         st.success(f"{key_name} found")
     except Exception:
-        st.warning(f"{key_name} not set. Add it to `.env` or Streamlit secrets.")
+        st.warning(f"{key_name} not set. Add it to `.env`, Streamlit secrets, "
+                   "or the container's environment.")
 
     st.divider()
     st.markdown(
@@ -173,11 +174,12 @@ with left:
     if not cases:
         if not DEMO_MODE:
             st.warning(
-                "**No cases available, and demo mode is off.** On a hosted "
-                "deployment this almost always means `RADREPORT_DEMO` is not set "
-                "to `1` in the app secrets: the image files are gitignored, so "
-                "the only cases available to a deployment are the precomputed "
-                "ones in `data/demo_cache.json`.\n\n"
+                "**No cases available, and demo mode is off.** Live inference "
+                "reads X-rays from `data/images`, which is gitignored and never "
+                "baked into the image. On Streamlit Cloud this means "
+                "`RADREPORT_DEMO` should be set to `1`, to serve the precomputed "
+                "cases. In a container it means the image volume is not mounted "
+                "at `data/images` (see `docs/azure-deploy.md`).\n\n"
                 "Locally, run `python scripts/fetch_data.py` for live inference.",
                 icon="🗄️",
             )

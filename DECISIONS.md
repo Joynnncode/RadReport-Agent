@@ -1490,3 +1490,51 @@ can be computed deterministically is computed deterministically, and the LLM
 judge is used only for the one thing that genuinely needs judgement* — and this
 is the day it paid for itself. A harness whose headline numbers all came from a
 model would have had nothing to report.
+
+---
+
+## 2026-09-11 — The thumbnails already in the repo are not the images
+
+**What happened.** Moving live inference to Azure Container Apps needed X-rays
+inside the container. The demo cache already carries a PNG for all 40 cases,
+committed and public, so writing those back out as `data/images/*.dcm.png` at
+build time looked free: no new data exposure, no volume, no network.
+
+Before doing it I ran the three imaging tools on four of those images and
+compared against the cached results from the originals:
+
+| Case | CTR, original → thumbnail | Top label, original → thumbnail | Largest probability shift |
+|---|---|---|---|
+| `1013_IM-0013-1001` | 0.520 → 0.520 | Cardiomegaly → Cardiomegaly | 0.116 |
+| `1031_IM-0025-4004` | 0.578 → 0.581 | Cardiomegaly → Cardiomegaly | 0.210 |
+| `10_IM-0002-2001` | 0.442 → 0.443 | **Mass → Fibrosis** | 0.116 |
+| `1105_IM-0072-1001-0001` | 0.579 → 0.585 | Cardiomegaly → Cardiomegaly | 0.229 |
+
+CTR held to within 0.006. The classifier did not. The cached images are 512 px
+thumbnails of 2496 × 2048 originals, and resampling twice (to 512 for storage,
+then to 224 for DenseNet) is not the same input as resampling once. CTR survives
+that because it is a ratio of widths. Per-label probabilities sitting near the
+operating point do not.
+
+**What I chose and why.** The originals, on an Azure Files share mounted
+read-only at `data/images`: the same shape as the `./data` mount in compose. The
+image stays free of X-rays, as the Dockerfile already argued, and live results
+are computed on the input the evaluation was measured on.
+
+The same look at the build context found the other half. `.dockerignore`
+excluded all of `data/`, so the report corpus and demo cache had never been in
+the image. It worked only because compose mounts `./data` over the top; a cloud
+container with nothing to mount would have started, passed its health check, and
+served an empty retriever. That is the 2026-08-27 lesson again. Both files are
+now copied in, and only `data/images` is mounted.
+
+Checked in the built image, not assumed. With nothing mounted, the corpus loads
+and the case list is empty rather than broken. With the originals mounted, live
+CTR and every classifier probability on the same four cases match the cache
+exactly (largest shift 0.0000, peak RSS 1,169 MB for the four runs), and the fast
+suite passes inside the container: 180 passed, 5 skipped.
+
+**The general point.** A thumbnail deployment would have run, looked right in
+the UI, and disagreed with the evaluation on a label nobody was checking. The
+demo already distinguishes "live" from "precomputed". "Live, on a different
+image" would have been a third kind of claim, presented as the first.

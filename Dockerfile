@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 #
-# CPU-only image for local reproducibility. No GPU, no CUDA.
+# CPU-only image, for local reproducibility and the Azure Container Apps
+# deployment (docs/azure-deploy.md). No GPU, no CUDA.
 #
 # Two decisions worth explaining:
 #
@@ -63,9 +64,17 @@ COPY scripts/ ./scripts/
 COPY tests/ ./tests/
 COPY app.py pytest.ini README.md DECISIONS.md requirements-deploy.txt ./
 
-# Data is NOT copied in. It is gitignored, it is 500 MB of medical images, and
-# baking a dataset into an image is how licence terms get violated by accident.
-# docker-compose mounts ./data instead; fetch it on the host first.
+# The two data files git already ships ARE copied in: the report corpus (1.3 MB)
+# and the demo cache (10 MB). The image used to find them only because compose
+# mounts ./data over the top; on a host with nothing to mount, retrieval was empty.
+#
+# The X-ray images are NOT. They are gitignored, 300 MB, and baking a dataset
+# into a public image is how licence terms get violated by accident. They are
+# mounted at data/images instead: ./data via compose locally, an Azure Files
+# share in the cloud (docs/azure-deploy.md). And not the demo cache's thumbnails
+# written back out either: measured, those move classifier probabilities by up
+# to 0.23 against the full-resolution originals. See DECISIONS.md, 2026-09-11.
+COPY data/reports.csv data/demo_cache.json ./data/
 RUN mkdir -p data/images artifacts traces .cache
 
 EXPOSE 8501

@@ -11,9 +11,15 @@ __pycache__/
 .env.*
 
 # Large or regenerable
-data/
+data/*
 artifacts/
 traces/
 .cache/
 evals/results/
 docs/
+
+# ...except the two data files git already ships. Locally compose mounts ./data
+# over the top, which hid that the image never contained them; a cloud container
+# has nothing to mount, and without these its retriever has no corpus.
+!data/reports.csv
+!data/demo_cache.json
