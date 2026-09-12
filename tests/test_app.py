@@ -1,10 +1,10 @@
 """Smoke tests for the Streamlit UI, via AppTest.
 
 These do not call an LLM. They assert the things that would embarrass the
-project if they broke silently: the safety banner rendering, the app starting at
+project if they broke silently: the safety notice rendering, the app starting at
 all, and the adversarial example buttons doing what they claim.
 
-The banner test is the one that matters. Every other surface of this project
+The notice test is the one that matters. Every other surface of this project
 carries the not-a-medical-device framing, and the UI is the surface a stranger
 actually sees. A refactor that quietly drops it should fail the build.
 """
@@ -35,8 +35,12 @@ def test_app_starts_without_exception(app):
 
 
 def test_safety_banner_is_present_and_unmissable(app):
-    """Not a medical device, on the first screen, not behind an expander."""
-    banners = " ".join(e.value for e in app.error)
+    """Not a medical device, on the first screen, not behind an expander.
+
+    It is a caption rather than a red block so it does not push the demo below
+    the fold, but it is still top-level, undismissable, and above everything.
+    """
+    banners = " ".join(c.value for c in app.caption)
     assert "Not a medical device" in banners
     assert "Not for clinical use" in banners
     assert "Research prototype" in banners

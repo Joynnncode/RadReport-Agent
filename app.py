@@ -27,29 +27,33 @@ st.set_page_config(page_title="RadReport Agent", page_icon="🫁", layout="wide"
 
 
 # ---------------------------------------------------------------------------
-# Safety banner. First thing rendered, on every rerun, not dismissible.
+# Safety notice. One line, on every rerun, not dismissible; the full text sits
+# in the expander below it and again at the foot of the page. Small enough that
+# it does not push the actual demo below the fold.
 # ---------------------------------------------------------------------------
 
 st.title("RadReport Agent")
-st.error(
-    "**Research prototype. Not a medical device. Not for clinical use.**  \n"
-    "Runs on the public, de-identified Indiana University Chest X-ray Collection. "
-    "Outputs are not validated for any clinical purpose, must not inform patient "
-    "care, and may be wrong in ways that look convincing.",
-    icon="⚠️",
-)
 
-
+_notice = "⚠️ **Research prototype. Not a medical device. Not for clinical use.**"
 if DEMO_MODE:
-    st.warning(
-        "**Precomputed demo.** This public deployment cannot run the imaging "
-        "models: PSPNet peaks at ~1.8 GB of RAM against a ~1 GB free-tier limit. "
-        "Classification, segmentation and CTR below were computed offline by the "
-        "real models on a fixed set of cases and are served from cache. "
-        "Retrieval, PubMed and the agent loop are live. Clone and run locally "
-        "for live inference.",
-        icon="🗄️",
+    _notice += "  ·  🗄️ **Precomputed demo** — imaging results are served from cache."
+st.caption(_notice)
+
+with st.expander("What that means"):
+    st.markdown(
+        "Runs on the public, de-identified Indiana University Chest X-ray "
+        "Collection. Outputs are not validated for any clinical purpose, must "
+        "not inform patient care, and may be wrong in ways that look convincing."
     )
+    if DEMO_MODE:
+        st.markdown(
+            "**Precomputed demo.** This public deployment cannot run the imaging "
+            "models: PSPNet peaks at ~1.8 GB of RAM against a ~1 GB free-tier "
+            "limit. Classification, segmentation and CTR below were computed "
+            "offline by the real models on a fixed set of cases and are served "
+            "from cache. Retrieval, PubMed and the agent loop are live. Clone "
+            "and run locally for live inference."
+        )
 
 
 @st.cache_data(show_spinner=False)
