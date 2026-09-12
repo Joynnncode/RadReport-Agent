@@ -252,13 +252,21 @@ curl -fsS https://$FQDN/_stcore/health
 az containerapp logs show -n $APP -g $RG --tail 40
 ```
 
-In the browser, or with the Playwright check that produced these results:
+Then check the app the way a stranger would, which is what
+`scripts/verify_deployment.py` does. It is the script that produced the results
+below, and it exits non-zero if any check fails, so it can gate a deploy:
+
+```bash
+python scripts/verify_deployment.py https://$FQDN
+python scripts/verify_deployment.py https://$FQDN --no-agent      # skips the token spend
+```
 
 - [x] Safety banner is the first thing visible
-- [x] **No** precomputed-demo banner
+- [x] **No** precomputed-demo banner (`--expect demo` inverts this, for the Streamlit deployment)
+- [x] A case is loaded from the mounted share
 - [x] The overlay toggle runs PSPNet live and renders lungs and heart
 - [x] No `Precomputed result` note anywhere in the output
-- [ ] Ask the agent a question end to end, and read the trace panel
+- [x] An agent run completes, calls tools (3 on the default question) and converges
 
 Memory, which is the reason this deployment exists:
 
