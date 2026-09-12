@@ -295,6 +295,29 @@ az ad app federated-credential create --id $CLIENT --parameters '{
 # Scoped to this resource group only, not the subscription.
 az role assignment create --assignee $CLIENT --role Contributor \
   --scope $(az group show -n $RG --query id -o tsv)
+```
+
+**That subject is probably not the one GitHub will send.** The first run failed
+with `AADSTS700213: No matching federated identity record found`, because the
+token carried GitHub's *immutable* subject, which embeds numeric account and
+repository ids:
+
+```
+repo:Joynnncode@174651056/RadReport-Agent@1344840994:ref:refs/heads/main
+```
+
+Names can be changed; those ids cannot, which is why the immutable form is the
+safer one to trust. Do not try to construct it. Read it back from the failed
+run's log (`gh run view <id> --log-failed`, the line beginning `subject claim`)
+and register a second credential with exactly that string:
+
+```bash
+az ad app federated-credential create --id $CLIENT --parameters '{
+  "name": "radreport-main-immutable",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "<the subject claim from the log>",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
 
 gh variable set AZURE_CLIENT_ID       --body $CLIENT
 gh variable set AZURE_TENANT_ID       --body $TENANT
@@ -302,6 +325,11 @@ gh variable set AZURE_SUBSCRIPTION_ID --body $SUB
 gh variable set AZURE_RESOURCE_GROUP  --body $RG
 gh variable set AZURE_CONTAINERAPP    --body $APP
 ```
+
+Expect the order to be circular, because it is: the variables have to exist
+before the `deploy` job runs at all, and the subject can only be read off a run
+that has already failed. Set the variables, push, let the first deploy fail on
+`AADSTS700213`, add the credential, then `gh run rerun <id> --failed`.
 
 The `deploy` job is skipped until `AZURE_CLIENT_ID` exists, so CI stays green
 before this step. It pins the app to the commit SHA rather than `:latest`:
