@@ -9,24 +9,33 @@ decides which tools to call and returns a structured, cited answer.
 
 ![One question, end to end: report lookup, segmentation, CTR, a cited answer, and the tool output behind it](docs/demo.gif)
 
-**[Live demo →](https://radreport-agent-daavehytdbjxdiugdja4gh.streamlit.app/)**
+**[Live inference, on Azure →](https://radreport.victoriousriver-f051dbcc.uksouth.azurecontainerapps.io)** ·
+**[Precomputed demo, on Streamlit Cloud →](https://radreport-agent-daavehytdbjxdiugdja4gh.streamlit.app/)**
 
-The GIF is the reliable artefact and the link is the interactive one. Regenerate
+The GIF is the reliable artefact and the links are the interactive ones. Regenerate
 it with `python scripts/record_demo.py` against a local instance — headless
 Chromium driving the real UI, so it can be re-recorded after a change without
 anyone sitting and clicking.
 
-Running on Streamlit Community Cloud, which puts apps to sleep after 12 hours
-without traffic. If you get a sleep screen, click *"Yes, get this app back up!"*
-and give it a moment — anyone can wake it, not just me.
+**The two deployments differ in one way that matters, and the apps say so.**
 
-The deployment runs with `RADREPORT_DEMO=1`: the imaging models are too large
-for the free tier's memory (PSPNet alone peaks around 1.8 GB against a ~1 GB
-limit), so it serves precomputed outputs from `data/demo_cache.json` — the real
-model results, computed earlier, each flagged `precomputed: true` in the UI.
-Retrieval, PubMed and the agent loop are fully live. "This model runs on your
-image in 40 ms" and "I ran this model last Tuesday on 40 images" are different
-claims, and the app does not blur them.
+*Azure Container Apps* runs the real models on the case you pick: 2 vCPU and
+4 GiB, 159 full-resolution X-rays mounted read-only from Azure Files, nothing
+precomputed. Measured there: 48 MB idle, 763 MB peak while segmenting. It scales
+to zero when idle, so the first request after a quiet spell waits for the image
+pull: 34 seconds, measured. Setup, verification and teardown are in
+[docs/azure-deploy.md](docs/azure-deploy.md).
+
+*Streamlit Community Cloud* runs with `RADREPORT_DEMO=1`, because the imaging
+models are too large for that free tier's memory (PSPNet alone peaks around
+1.8 GB against a ~1 GB limit). It serves precomputed outputs from
+`data/demo_cache.json` — the real model results, computed earlier, each flagged
+`precomputed: true` in the UI. Retrieval, PubMed and the agent loop are fully
+live. It sleeps after 12 hours without traffic; if you get a sleep screen, click
+*"Yes, get this app back up!"* — anyone can wake it, not just me.
+
+"This model runs on your image in 40 ms" and "I ran this model last Tuesday on
+40 images" are different claims, and neither app blurs them.
 
 ---
 

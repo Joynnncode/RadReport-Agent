@@ -1538,3 +1538,52 @@ suite passes inside the container: 180 passed, 5 skipped.
 the UI, and disagreed with the evaluation on a label nobody was checking. The
 demo already distinguishes "live" from "precomputed". "Live, on a different
 image" would have been a third kind of claim, presented as the first.
+
+---
+
+## 2026-09-12 — Four sign-in failures that were one sentence in a doc
+
+**What happened.** Deploying to Azure Container Apps, `az login --use-device-code`
+failed four times with `No subscriptions found for hxchen124@gmail.com`. The
+portal, meanwhile, plainly showed "Azure subscription 1". I worked through the
+obvious explanations in order: wrong account, incomplete signup, a stale
+subscription cache (`az account clear`), the subscription living in a tenant the
+CLI was not enumerating. The last of those was half right. Naming the tenant
+explicitly changed the error, and the new one was the real one: the browser
+showed **AADSTS530035, BlockedBySecurityDefaults**.
+
+Security defaults are enabled on every new tenant, and one of the things they
+enforce is: "Starting July 1, 2026, all new Microsoft Entra tenants block device
+code flow as part of security defaults." This tenant was created in September
+2026. Plain `az login` in a browser worked first time.
+
+**What I chose and why.** The runbook now leads with "do not use
+`--use-device-code`" and quotes that sentence, because the CLI's own error
+message is actively misleading: a policy block is reported as an absence of
+subscriptions, which sends you to look at billing instead of at authentication.
+Four rounds of debugging came from believing the error text.
+
+One thing that did work well: the Default Directory's tenant GUID came from the
+public OpenID discovery endpoint (`/.well-known/openid-configuration`) rather
+than from asking for it. That endpoint confirms a tenant exists; only the login
+proves it is yours.
+
+**What was verified, and how.** Not "it deployed":
+
+- `script -q /dev/null az containerapp exec ... ls /app/data /app/data/images`
+  (the wrapper is needed because `exec` dies with `termios.error` without a
+  terminal) shows `demo_cache.json`, `reports.csv` and 159 `.dcm.png`. Both
+  halves matter: the baked files survived the mount, and the mount is populated.
+- Playwright against the deployed URL: safety banner present, precomputed banner
+  absent, and the overlay toggle rendering lungs and heart, which cannot happen
+  without PSPNet running on the spot.
+- `WorkingSetBytes`: 48 MB idle, **763 MB peak** during that segmentation,
+  against 4 GiB allocated and the ~1 GB free tier that forced precomputation.
+
+**One near-miss worth recording.** I chained `containerapp update` (the volume
+mount) straight into `containerapp secret set`, and the second failed with
+"another operation is in progress". The CLI still exited 0, and
+`containerapp show` then listed the secret by name, so both the exit status and
+the obvious check said it had worked. Comparing a hash of the stored value
+against `.env` is what actually proved it. A secret that exists but is empty
+fails at the first agent call, in a place that looks nothing like a deploy bug.
