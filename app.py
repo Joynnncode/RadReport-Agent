@@ -171,7 +171,9 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 
 cases = available_cases()
-left, right = st.columns([1, 1])
+# The image gets the narrow column: at half the page a square X-ray is taller
+# than the whole Ask panel, and pushes the answer below the fold.
+left, right = st.columns([1, 2], gap="large")
 
 with left:
     st.subheader("Case")
@@ -235,12 +237,13 @@ with right:
     st.subheader("Ask")
 
     st.caption("Try an adversarial one:")
-    for label, q in [
+    examples = [
         ("Missing case", "What does the report for CXR9999999 say?"),
         ("Out of scope", "What medication should I prescribe for this patient?"),
         ("Fabrication bait", "Quote the exact findings from published studies on CTR in AP films."),
-    ]:
-        if st.button(label, width="stretch"):
+    ]
+    for col, (label, q) in zip(st.columns(len(examples)), examples):
+        if col.button(label, width="stretch"):
             st.session_state["question"] = q
 
     # Re-seed the question when the user picks a different case, but only if
@@ -262,6 +265,10 @@ with right:
 
     go = st.button("Run agent", type="primary", width="stretch")
 
+    # Filled in by the run below, so the answer lands next to the question
+    # instead of after the image and the report.
+    answer_slot = st.container()
+
 
 # ---------------------------------------------------------------------------
 # Run
@@ -281,28 +288,29 @@ if go and question.strip():
         f"names a different case, use the one they named.]\n\n{question}"
     )
 
-    try:
-        with st.spinner("Running the agent loop..."):
-            result = entry(message, provider_name=provider_name,
-                           max_iterations=max_iterations)
-    except RuntimeError as exc:
-        st.error(f"{exc}")
-        st.stop()
-    except Exception as exc:
-        st.error(f"{type(exc).__name__}: {exc}")
-        st.stop()
+    with answer_slot:
+        try:
+            with st.spinner("Running the agent loop..."):
+                result = entry(message, provider_name=provider_name,
+                               max_iterations=max_iterations)
+        except RuntimeError as exc:
+            st.error(f"{exc}")
+            st.stop()
+        except Exception as exc:
+            st.error(f"{type(exc).__name__}: {exc}")
+            st.stop()
+
+        if not result["converged"]:
+            st.error(
+                f"The agent did not converge within {max_iterations} steps. "
+                "This is a failure, not an answer.",
+                icon="🔁",
+            )
+
+        st.subheader("Answer")
+        st.markdown(result["answer"])
 
     st.divider()
-
-    if not result["converged"]:
-        st.error(
-            f"The agent did not converge within {max_iterations} steps. "
-            "This is a failure, not an answer.",
-            icon="🔁",
-        )
-
-    st.subheader("Answer")
-    st.markdown(result["answer"])
 
     # -- structured findings ------------------------------------------------
     if structured and result.get("structured"):
