@@ -54,9 +54,16 @@ def record(url: str, out_dir: Path, width: int, height: int) -> Path:
             record_video_size={"width": width, "height": height},
             device_scale_factor=1,
         )
+        # Injected before the page's own scripts run. Adding the style after
+        # goto left the toolbar visible in the first frames of the recording.
+        context.add_init_script(
+            "document.addEventListener('DOMContentLoaded', () => {"
+            " const s = document.createElement('style');"
+            f" s.textContent = {HIDE_CHROME!r};"
+            " document.head.appendChild(s); });"
+        )
         page = context.new_page()
         page.goto(url, wait_until="networkidle", timeout=60_000)
-        page.add_style_tag(content=HIDE_CHROME)
         page.wait_for_timeout(2500)          # let a reader take in the setup
 
         run = page.get_by_role("button", name="Run agent")
@@ -70,17 +77,17 @@ def record(url: str, out_dir: Path, width: int, height: int) -> Path:
         answer = page.get_by_text("Answer", exact=True).first
         answer.wait_for(timeout=180_000)
 
-        # Park ON the answer and hold. The answer renders below the fold, so
-        # without this the viewport is still showing the input form when the
-        # result arrives, and the first recording scrolled past the prose fast
-        # enough that only its last bullet was ever readable. The cited quote is
-        # the thing the whole project is about; it gets time on screen.
-        answer.scroll_into_view_if_needed()
-        page.wait_for_timeout(3500)
+        # Hold without scrolling. The answer renders under Run agent, beside the
+        # image and the question, so this one frame is question -> answer. An
+        # earlier version scrolled to the answer, which pushed the question off
+        # screen. The cited quote is the point of the project; it gets time.
+        page.wait_for_timeout(5000)
 
-        for _ in range(5):
-            page.mouse.wheel(0, 200)
-            page.wait_for_timeout(900)
+        # Small steps: the answer is long, and big jumps left only its last
+        # bullet readable.
+        for _ in range(8):
+            page.mouse.wheel(0, 140)
+            page.wait_for_timeout(1000)
         page.wait_for_timeout(1200)
 
         # Open compute_ctr to show the exact numbers the model received. This
@@ -107,12 +114,13 @@ def record(url: str, out_dir: Path, width: int, height: int) -> Path:
             if details.get_attribute("open") is None:      # click landed nowhere
                 summaries.nth(target).click()
                 page.wait_for_timeout(1200)
-            # Keep it on screen. Scrolling on past the thing just opened is how
-            # the first recording ended up showing nothing.
-            summaries.nth(target).scroll_into_view_if_needed()
-            page.wait_for_timeout(400)
-            page.mouse.wheel(0, 220)
-            page.wait_for_timeout(4500)
+            # Bring the result JSON to the top of the viewport: the ratio sits
+            # under the arguments, and parking on the expander header left it
+            # below the fold.
+            result_caption = details.get_by_text("result the model received")
+            result_caption.evaluate("el => el.scrollIntoView({block: 'start'})")
+            page.mouse.wheel(0, -60)
+            page.wait_for_timeout(5000)
         else:
             page.wait_for_timeout(2000)
 
