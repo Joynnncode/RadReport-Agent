@@ -491,6 +491,26 @@ A prompt is a request the model can decline; a validator is a guarantee.
 | `get_report_by_image` | exact join | Specific patient lookup. Returns `found: false` rather than a similar case. |
 | `search_literature` | PubMed | Rate-limited to 3 req/s, hard timeout. |
 
+### `search_reports` as an MCP server
+
+The report search is also served over [MCP](https://modelcontextprotocol.io),
+so any MCP client (Claude Code, Claude Desktop, an IDE) can search the corpus
+directly, without the agent:
+
+```bash
+python -m radreport.mcp_server     # stdio; clients start it themselves
+```
+
+With Claude Code, from the repo root:
+
+```bash
+claude mcp add radreport -- "$PWD/.venv/bin/python" -m radreport.mcp_server
+```
+
+It exposes the same `query` and `k` the agent gives the model, with `k` capped
+at 10, BM25 only. It starts in demo mode, so torch is never loaded: this tool
+does not need it. Only `data/reports.csv` has to be present.
+
 ---
 
 ## Tests
@@ -569,6 +589,7 @@ radreport/
   grounding.py   ONE definition of "this quote came from a tool result"
   schema.py      AgentAnswer/Finding/Evidence + the validators
   tools/         six tools + registry + standalone CLI
+  mcp_server.py  search_reports over MCP
 scripts/
   fetch_data.py  builds the local corpus from the IU collection
 docs/
